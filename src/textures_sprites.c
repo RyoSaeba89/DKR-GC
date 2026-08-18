@@ -690,6 +690,7 @@ void material_set_no_tex_offset(Gfx **dList, TextureHeader *texhead, u32 flags) 
  * Also tracks which modes are active, to prevent setting them again if they're already active.
  * A number can be attached that adds a texture address offset. An example of this being used is
  * the numbered doors in the hub, to change what number is written on it.
+ * Official name: texDPTextureX
  */
 void material_set(Gfx **dList, TextureHeader *texhead, s32 flags, s32 texOffset) {
     s32 forceFlags;
@@ -934,6 +935,7 @@ void material_load_simple(Gfx **dList, s32 flags) {
  * Loads a sprite from its asset, allocates memory for vertices, triangles, and display lists,
  * and initializes the display list for each texture and frame.
  * If the sprite is already cached, returns it from the cache.
+ * Official name: texLoadSprite
  */
 Sprite *tex_load_sprite(s32 spriteID, s32 arg1) {
     Sprite *refSprite;

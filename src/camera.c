@@ -1600,6 +1600,7 @@ Camera *cam_get_active_camera_no_cutscenes(void) {
 
 /**
  * Returns the active camera.
+ * Official name: camGetPtr
  */
 Camera *cam_get_active_camera(void) {
     if (gCutsceneCameraActive) {
@@ -1611,6 +1612,7 @@ Camera *cam_get_active_camera(void) {
 /**
  * Returns the segment data of the active cutscene camera.
  * If no cutscene is active, return player 1's camera.
+ * Official name: camGetListPtr
  */
 Camera *cam_get_cameras(void) {
     if (gCutsceneCameraActive) {
@@ -1621,6 +1623,7 @@ Camera *cam_get_cameras(void) {
 
 /**
  * Return the current floating point projection matrix.
+ * Official name: camGetInvProjMtx
  */
 MtxF *get_projection_matrix_f32(void) {
     return &gInverseViewMatrixF;
@@ -1628,6 +1631,7 @@ MtxF *get_projection_matrix_f32(void) {
 
 /**
  * Return the current fixed point projection matrix.
+ * Official name: camGetProjOrgMtx
  */
 Mtx *get_projection_matrix_s16(void) {
     return &gPerspectiveMatrix;
@@ -1635,6 +1639,7 @@ Mtx *get_projection_matrix_s16(void) {
 
 /**
  * Return the current camera matrix.
+ * Official name: camGetRotationMtx
  */
 MtxF *get_camera_matrix(void) {
     return &gViewMatrixF;

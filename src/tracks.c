@@ -281,6 +281,7 @@ void init_track(u32 geometry, u32 skybox, s32 numberOfPlayers, Vehicle vehicle, 
 /**
  * The root function for rendering the entire scene.
  * Handles drawing the track, objects and the majority of the HUD in single player.
+ * Official name: trackDraw
  */
 void render_scene(Gfx **dList, Mtx **mtx, Vertex **vtx, Triangle **tris, s32 updateRate) {
     s32 i;
@@ -1316,6 +1317,7 @@ void track_tex_anim(s32 updateRate) {
  * Spawns and initialises the skydome object seen ingame.
  * Skipped if the object ID doesn't exist.
  * Also compares a checksum which can potentially trigger anti-tamper measures.
+ * Official name: initSky
  */
 void skydome_spawn(s32 objectID) {
     LevelObjectEntryCommon spawnObject;
@@ -1343,6 +1345,7 @@ void skydome_spawn(s32 objectID) {
 /**
  * Sets the status to render the sky.
  * If set to false, will skip the background and skydome rendering.
+ * Official name: trackSkySet
  */
 void set_skydome_visbility(s32 renderSky) {
     gSceneRenderSkyDome = renderSky;

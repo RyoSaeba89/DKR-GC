@@ -398,6 +398,7 @@ void weather_set(s32 velX, s32 velY, s32 velZ, s32 intensity, s32 opacity, s32 t
 /**
  * The root function for handling all weather.
  * Decide whether to perform rain or snow logic, execute it, then set it to render right after.
+ * Official name: doWeather
  */
 void weather_update(Gfx **currDisplayList, Mtx **currHudMat, Vertex **currHudVerts, Triangle **currHudTris,
                     s32 updateRate) {
@@ -930,99 +931,101 @@ void rain_render_splashes(s32 updateRate) {
     WaterProperties **waterProps;
 
     setEnvColor = TRUE;
-    if (gRainSplashGfx != NULL) {
-        temp_t0 = ((gRainOpacity >> 2) * gLightningFrequency) >> 14;
-        if (temp_t0 > 0x4000) {
-            racer = get_racer_object_by_port(0);
-            gRainSplashDelay -= updateRate;
-            if (gRainSplashDelay <= 0) {
-                i = 0;
-                if (racer != NULL) {
-                    firstIndexWithoutFlags = -1;
-                    for (; i < ARRAY_COUNT(gRainSplashSegments) && firstIndexWithoutFlags < 0; i++) {
-                        if (gRainSplashSegments[i].trans.flags == OBJ_FLAGS_NONE) {
-                            firstIndexWithoutFlags = i;
-                        }
-                    }
-                    if (firstIndexWithoutFlags >= 0) {
-                        randYRot = rand_range(-0x2000, 0x2000) + racer->trans.rotation.y_rotation + 0x8000;
-                        randFloat = (f32) rand_range(50, 500);
-                        xPos = (sins_f(randYRot) * randFloat) + racer->trans.x_position;
-                        zPos = (coss_f(randYRot) * randFloat) + racer->trans.z_position;
-                        i = get_level_segment_waves(
-                            get_level_segment_index_from_position(xPos, racer->trans.y_position, zPos), xPos, zPos,
-                            &waterProps);
-                        if (i != 0) {
-                            var_f2 = 1000.0f;
-                            waveIndex = 0;
-                            if (i >= 2) {
-                                while (waveIndex < (i - 1) &&
-                                       racer->trans.y_position < waterProps[waveIndex]->waveHeight) {
-                                    waveIndex++;
-                                }
-                                if (waveIndex > 0) {
-                                    var_f2 = racer->trans.y_position - waterProps[waveIndex]->waveHeight;
-                                    if (var_f2 < 0.0f) {
-                                        var_f2 = -var_f2;
-                                    }
-                                    waveIndex--;
-                                }
-                            }
-                            var_f0 = racer->trans.y_position - waterProps[waveIndex]->waveHeight;
-                            if (var_f0 < 0.0f) {
-                                var_f0 = -var_f0;
-                            }
-                            if (var_f0 < var_f2) {
-                                if (var_f0 > 200.0f) {
-                                    firstIndexWithoutFlags = -1;
-                                }
-                            } else {
-                                waveIndex++;
-                                if (var_f2 > 200.0f) {
-                                    firstIndexWithoutFlags = -1;
-                                }
-                            }
-                            if (firstIndexWithoutFlags >= 0) {
-                                gRainSplashSegments[firstIndexWithoutFlags].trans.x_position = xPos;
-                                gRainSplashSegments[firstIndexWithoutFlags].trans.y_position =
-                                    waterProps[waveIndex]->waveHeight;
-                                gRainSplashSegments[firstIndexWithoutFlags].trans.z_position = zPos;
-                                gRainSplashSegments[firstIndexWithoutFlags].animFrame = 0;
-                                gRainSplashSegments[firstIndexWithoutFlags].trans.flags = OBJ_FLAGS_UNK_0001;
-                                gRainSplashSegments[firstIndexWithoutFlags].opacity =
-                                    rand_range(128, (temp_t0 >> 10) + 191);
-                                gRainSplashDelay = (gRainSplashDelay - (temp_t0 >> 10)) + 64;
-                                if (gRainSplashDelay < 0) {
-                                    gRainSplashDelay = 0;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        for (i = 0; i < ARRAY_COUNT(gRainSplashSegments); i++) {
-            if (gRainSplashSegments[i].trans.flags != 0) {
-                gRainSplashSegments[i].animFrame += updateRate * 16;
-                if (gRainSplashSegments[i].animFrame > 255) {
-                    gRainSplashSegments[i].trans.flags = 0;
-                } else {
-                    if (setEnvColor) {
-                        setEnvColor = FALSE;
-                        gDPSetEnvColor(gCurrWeatherDisplayList++, 255, 255, 255, 0);
-                    }
-
-                    gDPSetPrimColor(gCurrWeatherDisplayList++, 0, 0, 192, 192, 255, gRainSplashSegments[i].opacity);
-                    render_sprite_billboard(&gCurrWeatherDisplayList, &gCurrWeatherMatrix, &gCurrWeatherVertexList,
-                                            (Object *) &gRainSplashSegments[i], gRainSplashGfx,
-                                            RENDER_Z_COMPARE | RENDER_SEMI_TRANSPARENT | RENDER_FOG_ACTIVE |
-                                                RENDER_Z_UPDATE);
-                }
-            }
-        }
-
-        gDPSetPrimColor(gCurrWeatherDisplayList++, 0, 0, 255, 255, 255, 255);
+    if (gRainSplashGfx == NULL) {
+        return;
     }
+
+    temp_t0 = ((gRainOpacity >> 2) * gLightningFrequency) >> 14;
+    if (temp_t0 > 0x4000) {
+        racer = get_racer_object_by_port(0);
+        gRainSplashDelay -= updateRate;
+        if (gRainSplashDelay <= 0) {
+            i = 0;
+            if (racer != NULL) {
+                firstIndexWithoutFlags = -1;
+                for (; i < ARRAY_COUNT(gRainSplashSegments) && firstIndexWithoutFlags < 0; i++) {
+                    if (gRainSplashSegments[i].trans.flags == OBJ_FLAGS_NONE) {
+                        firstIndexWithoutFlags = i;
+                    }
+                }
+                if (firstIndexWithoutFlags >= 0) {
+                    randYRot = rand_range(-0x2000, 0x2000) + racer->trans.rotation.y_rotation + 0x8000;
+                    randFloat = (f32) rand_range(50, 500);
+                    xPos = (sins_f(randYRot) * randFloat) + racer->trans.x_position;
+                    zPos = (coss_f(randYRot) * randFloat) + racer->trans.z_position;
+                    i = get_level_segment_waves(
+                        get_level_segment_index_from_position(xPos, racer->trans.y_position, zPos), xPos, zPos,
+                        &waterProps);
+                    if (i != 0) {
+                        var_f2 = 1000.0f;
+                        waveIndex = 0;
+                        if (i >= 2) {
+                            while (waveIndex < (i - 1) &&
+                                    racer->trans.y_position < waterProps[waveIndex]->waveHeight) {
+                                waveIndex++;
+                            }
+                            if (waveIndex > 0) {
+                                var_f2 = racer->trans.y_position - waterProps[waveIndex]->waveHeight;
+                                if (var_f2 < 0.0f) {
+                                    var_f2 = -var_f2;
+                                }
+                                waveIndex--;
+                            }
+                        }
+                        var_f0 = racer->trans.y_position - waterProps[waveIndex]->waveHeight;
+                        if (var_f0 < 0.0f) {
+                            var_f0 = -var_f0;
+                        }
+                        if (var_f0 < var_f2) {
+                            if (var_f0 > 200.0f) {
+                                firstIndexWithoutFlags = -1;
+                            }
+                        } else {
+                            waveIndex++;
+                            if (var_f2 > 200.0f) {
+                                firstIndexWithoutFlags = -1;
+                            }
+                        }
+                        if (firstIndexWithoutFlags >= 0) {
+                            gRainSplashSegments[firstIndexWithoutFlags].trans.x_position = xPos;
+                            gRainSplashSegments[firstIndexWithoutFlags].trans.y_position =
+                                waterProps[waveIndex]->waveHeight;
+                            gRainSplashSegments[firstIndexWithoutFlags].trans.z_position = zPos;
+                            gRainSplashSegments[firstIndexWithoutFlags].animFrame = 0;
+                            gRainSplashSegments[firstIndexWithoutFlags].trans.flags = OBJ_FLAGS_UNK_0001;
+                            gRainSplashSegments[firstIndexWithoutFlags].opacity =
+                                rand_range(128, (temp_t0 >> 10) + 191);
+                            gRainSplashDelay = (gRainSplashDelay - (temp_t0 >> 10)) + 64;
+                            if (gRainSplashDelay < 0) {
+                                gRainSplashDelay = 0;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    for (i = 0; i < ARRAY_COUNT(gRainSplashSegments); i++) {
+        if (gRainSplashSegments[i].trans.flags != 0) {
+            gRainSplashSegments[i].animFrame += updateRate * 16;
+            if (gRainSplashSegments[i].animFrame > 255) {
+                gRainSplashSegments[i].trans.flags = 0;
+            } else {
+                if (setEnvColor) {
+                    setEnvColor = FALSE;
+                    gDPSetEnvColor(gCurrWeatherDisplayList++, 255, 255, 255, 0);
+                }
+
+                gDPSetPrimColor(gCurrWeatherDisplayList++, 0, 0, 192, 192, 255, gRainSplashSegments[i].opacity);
+                render_sprite_billboard(&gCurrWeatherDisplayList, &gCurrWeatherMatrix, &gCurrWeatherVertexList,
+                                        (Object *) &gRainSplashSegments[i], gRainSplashGfx,
+                                        RENDER_Z_COMPARE | RENDER_SEMI_TRANSPARENT | RENDER_FOG_ACTIVE |
+                                            RENDER_Z_UPDATE);
+            }
+        }
+    }
+
+    gDPSetPrimColor(gCurrWeatherDisplayList++, 0, 0, 255, 255, 255, 255);
 }
 
 /**

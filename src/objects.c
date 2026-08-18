@@ -1923,7 +1923,7 @@ void add_particle_to_entity_list(Object *obj) {
     gParticleCount++;
 }
 
-// Official Name: ObjSetupObject
+// Official Name: objSetupObject
 Object *spawn_object(LevelObjectEntryCommon *entry, s32 spawnFlags) {
     s32 objType;
     Settings *settings;
@@ -7180,6 +7180,7 @@ Object *get_racer_object(s32 index) {
 
 /**
  * Returns the racer object specified by the player ID.
+ * Official name: objGetPlayerNo
  */
 Object *get_racer_object_by_port(s32 index) {
     if (gNumRacers == 0) {
