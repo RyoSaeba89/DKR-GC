@@ -277,6 +277,10 @@ extern u32 gGcAiCallbacks, gGcAiUnderruns, gGcAiPushed, gGcAiRingUsed;
  * one DMA block, how empty the ring is when the consumer looks (not when the
  * producer does), and the longest run of callbacks with no push at all. */
 extern u32 gGcAiUnderEvents, gGcAiUnderMax, gGcAiRingMin, gGcAiPushGapMax;
+/* The audio producer's two times: longest interval between audio tasks, and
+ * longest time inside one. Separates "the task was late" from "the task was
+ * slow", which one gap counter cannot. */
+extern u32 gGcAudTaskGapMs, gGcAudTaskRunMs;
 /* The rate loop that holds the ring at RING_TARGET against the drift between
  * the game's supply and the DAC's 48 kHz: the corrected 16.16 resampling step
  * and the smoothed depth it is steering. */

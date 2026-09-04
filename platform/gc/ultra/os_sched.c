@@ -38,7 +38,19 @@
 #include <ultra64.h>
 #include <PR/sched.h>
 
+#include <ogc/lwp_watchdog.h>
+
 #include "gc_ultra.h"
+
+#ifdef GC_DEBUG
+/* The audio producer's two times, per beat: the longest interval between two
+ * audio tasks, and the longest one task took. `gap 19 cb` in the AI log is
+ * about 100 ms of silence against a 64 ms ring, and these two say whether the
+ * task was late or slow. */
+u32 gGcAudTaskGapMs;
+u32 gGcAudTaskRunMs;
+static u64 sLastAudTask;
+#endif
 
 /* The values libultra uses for the notifications it posts to interruptQ. They
  * are duplicated here rather than shared because sched.c is not compiled for
@@ -216,7 +228,41 @@ static void run_task(OSSched *sc, OSScTask *task) {
                     gc_logfile_mark("sched: first audio task\n");
                 }
             }
+#ifdef GC_DEBUG
+            /*
+             * How long the audio producer is away, and how long it works.
+             *
+             * The rate loop fixed the drift, and what is left in the log is a
+             * different shape: `gap 19 cb`, repeatedly, during ordinary play --
+             * nineteen DMA callbacks, about 100 ms, with nothing pushed. The
+             * ring holds 64 ms, so it runs dry and the music drops out. That is
+             * starvation, not drift, and it has two possible halves: the task
+             * is not being dispatched, or it is being dispatched and taking too
+             * long. A single counter cannot tell them apart, so both are timed.
+             */
+            {
+                u64 now = gettime();
+
+                if (sLastAudTask != 0) {
+                    u32 gapMs = (u32) (ticks_to_millisecs(diff_ticks(sLastAudTask, now)));
+
+                    if (gapMs > gGcAudTaskGapMs) {
+                        gGcAudTaskGapMs = gapMs;
+                    }
+                }
+                sLastAudTask = now;
+                gc_audio_run_cmds(task->list.t.data_ptr, task->list.t.data_size);
+                {
+                    u32 runMs = (u32) (ticks_to_millisecs(diff_ticks(now, gettime())));
+
+                    if (runMs > gGcAudTaskRunMs) {
+                        gGcAudTaskRunMs = runMs;
+                    }
+                }
+            }
+#else
             gc_audio_run_cmds(task->list.t.data_ptr, task->list.t.data_size);
+#endif
             sc->curRSPTask = NULL;
             break;
 

@@ -215,8 +215,11 @@ static void gc_heartbeat(u32 ticks) {
      * the step it settles on against its nominal value, and the depth it holds.
      * A step that sits at its clamp means the drift is larger than the loop can
      * absorb, which would be a different defect. */
-    gc_log(" | rate step %u depth %u", (unsigned) gGcAiStep,
-           (unsigned) gGcAiDepthAvg);
+    gc_log(" | rate step %u depth %u | audtask gap %u ms run %u ms",
+           (unsigned) gGcAiStep, (unsigned) gGcAiDepthAvg,
+           (unsigned) gGcAudTaskGapMs, (unsigned) gGcAudTaskRunMs);
+    gGcAudTaskGapMs = 0;
+    gGcAudTaskRunMs = 0;
     gGcAiUnderEvents = 0;
     gGcAiUnderMax = 0;
     gGcAiRingMin = 0xFFFFFFFFu;
