@@ -220,6 +220,14 @@ static void gc_heartbeat(u32 ticks) {
            (unsigned) gGcAudTaskGapMs, (unsigned) gGcAudTaskRunMs);
     gGcAudTaskGapMs = 0;
     gGcAudTaskRunMs = 0;
+    /* The crackle as sound, not as delivery. The run that carried zero
+     * underruns from boot to the end still crackled, so every counter above
+     * this line is measuring the wrong thing. */
+    gc_log("\n           ai steps %u over %u, largest %u",
+           (unsigned) gGcAiSteps, 11000u,
+           (unsigned) gGcAiStepMax);
+    gGcAiSteps = 0;
+    gGcAiStepMax = 0;
     gGcAiUnderEvents = 0;
     gGcAiUnderMax = 0;
     gGcAiRingMin = 0xFFFFFFFFu;

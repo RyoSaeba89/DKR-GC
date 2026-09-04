@@ -79,6 +79,16 @@
  */
 #define RING_TARGET 3072
 
+/*
+ * How far two adjacent output samples may be apart before it is a click.
+ *
+ * A third of full scale. Music at 22 kHz resampled to 48 kHz moves in small
+ * steps between neighbours; a jump this large is a splice, not a note. The
+ * threshold is deliberately generous -- the aim is to count only what would be
+ * audible as a click, not to measure high-frequency content.
+ */
+#define AUDIO_STEP_THRESHOLD 11000
+
 typedef struct {
     s16 l, r;
 } Frame;
@@ -156,6 +166,11 @@ u32 gGcAiPushGapMax;
  * the corrected 16.16 step and the smoothed ring depth it is steering. */
 u32 gGcAiStep;
 u32 gGcAiDepthAvg;
+/* Discontinuities in the delivered waveform, and the largest one. This is the
+ * crackle measured as sound rather than as delivery. */
+u32 gGcAiSteps;
+u32 gGcAiStepMax;
+static s16 sPrevL;
 static u32 sCbSincePush;
 u32 gGcAiPushed;
 u32 gGcAiRingUsed;
@@ -206,6 +221,43 @@ static void dma_callback(void) {
     for (i = 0; i < DMA_FRAMES; i++) {
         if (sRingRead != sRingWrite) {
             out[i] = sRing[sRingRead];
+#ifdef GC_DEBUG
+            /*
+             * Steps in the waveform, counted on the way to the DAC.
+             *
+             * The run that produced this counter had **zero underruns from boot
+             * to the end** -- `under` never moved off its 3072 of initial fill
+             * -- and the music was still reported as crackling. Those two facts
+             * together say the crackle is not a delivery problem at all, and
+             * every audio counter so far has been about delivery.
+             *
+             * A click is a discontinuity: one sample far from the one before
+             * it. Music at 22 kHz moves smoothly between adjacent samples, so a
+             * jump of a third of full scale is not music -- it is a splice, a
+             * bad loop point, an envelope applied to the wrong span, or a
+             * decoder restarting mid-block. This counts them at the last point
+             * the port controls, so it measures the sound that actually leaves
+             * the machine rather than any one stage's opinion of it.
+             *
+             * It cannot say *which* voice, but it turns "it crackles" into a
+             * number that a change can be tested against, which is the thing
+             * that has been missing.
+             */
+            {
+                s32 d = (s32) out[i].l - (s32) sPrevL;
+
+                if (d < 0) {
+                    d = -d;
+                }
+                if (d > AUDIO_STEP_THRESHOLD) {
+                    gGcAiSteps++;
+                    if ((u32) d > gGcAiStepMax) {
+                        gGcAiStepMax = (u32) d;
+                    }
+                }
+                sPrevL = out[i].l;
+            }
+#endif
             sRingRead = (sRingRead + 1) % RING_FRAMES;
 #ifdef GC_DEBUG
             if (runHere > gGcAiUnderMax) {

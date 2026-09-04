@@ -285,6 +285,10 @@ extern u32 gGcAudTaskGapMs, gGcAudTaskRunMs;
  * the game's supply and the DAC's 48 kHz: the corrected 16.16 resampling step
  * and the smoothed depth it is steering. */
 extern u32 gGcAiStep, gGcAiDepthAvg;
+/* Steps in the delivered waveform larger than a third of full scale, and the
+ * largest. A click is a discontinuity; this counts the crackle as sound rather
+ * than as a delivery statistic. */
+extern u32 gGcAiSteps, gGcAiStepMax;
 extern u32 gGcAiRejected;
 extern u32 gGcAiRefusedFull;
 extern u32 gGcAiOffers, gGcAiOfferedFrames, gGcAiGameRate;
