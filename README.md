@@ -91,8 +91,7 @@ Knobs worth knowing (all `make -f Makefile.gc VAR=value`):
 ## How it works
 
 [`PORTING.md`](PORTING.md) is the full dossier — around 2 500 lines, a dated
-section per finding, written as the port was made. It is in French. The short
-version:
+section per finding, written as the port was made. The short version:
 
 - **`platform/gc/ultra/`** reimplements libultra on libogc2. The scheduler is
   the interesting one: it intercepts the RSP graphics and audio tasks the game
@@ -113,17 +112,23 @@ the port drops.
 
 ## Known issues
 
-- **One asset does not decompress.** Exactly one, once per session, in the
-  menus. The bytes in the buffer do not occur anywhere in the ROM, so it never
-  received asset data at all. Instrumented, not yet solved.
-- **The audio has not been judged by ear** on hardware since the mixer bug that
-  made it unlistenable was fixed. Latency is about 112 ms.
-- **The ground reads as a flat light surface**, which stops shadows from being
-  legible.
-- **A card labelled "1" is drawn behind each character** on the selection
-  screen.
+Reported from console, in the order they are being worked on:
+
+- **The audio crackles.** Nothing clips any more (`clipped 0/22000`), but the
+  output ring runs dry for 126 to 265 frames out of every 57 600 — 0.2 % to
+  0.5 % of the output. The next build measures whether that is a sprinkle of
+  clicks or one 5 ms dropout, which need different fixes. Latency is about
+  112 ms on top of that.
+- **Menu text does not appear, and 2D sprites are wrong** — the balloons, the
+  in-race banana count, the HUD, and a card labelled "1" behind each character
+  on the selection screen. All of these live on the same texrect and sprite
+  path, and the texture counters are clean, so they are very likely one defect.
+- **Character shadows flicker**, against a ground that reads as a flat pale
+  surface.
 - **A rare freeze after several presses of START** in the menus, not yet
   reproducible.
+- **One asset does not decompress.** Once per session, in the menus. It did not
+  recur on the latest build; instrumented in case it comes back.
 - Time Trial ghosts save to the emulated Controller Pak, but the full
   save-power-off-reload path has never been walked end to end.
 

@@ -240,6 +240,10 @@ extern u32 gGcAmSamplesLeft, gGcAmFrameSize, gGcAmMinFrameSize;
 /* The DAC side, from ultra/os_ai.c: DMA callbacks served, frames of silence
  * emitted for want of data, frames pushed into the ring, and the ring depth. */
 extern u32 gGcAiCallbacks, gGcAiUnderruns, gGcAiPushed, gGcAiRingUsed;
+/* The shape of the dropouts: separate events, longest run of silent frames in
+ * one DMA block, how empty the ring is when the consumer looks (not when the
+ * producer does), and the longest run of callbacks with no push at all. */
+extern u32 gGcAiUnderEvents, gGcAiUnderMax, gGcAiRingMin, gGcAiPushGapMax;
 extern u32 gGcAiRejected;
 extern u32 gGcAiRefusedFull;
 extern u32 gGcAiOffers, gGcAiOfferedFrames, gGcAiGameRate;

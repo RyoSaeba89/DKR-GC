@@ -1,10 +1,11 @@
-# Diddy Kong Racing — portage natif GameCube
+# Diddy Kong Racing — native GameCube port
 
-Port natif du décompilé DKR vers la GameCube, avec **devkitPPC + libogc2**
-(le fork d'Extrems). Aucune bibliothèque n'est réécrite : tout ce qui existe
-déjà dans libogc2 est utilisé tel quel.
+A native port of the DKR decompilation to the GameCube, with **devkitPPC +
+libogc2** (Extrems' fork). No library is rewritten: everything that already
+exists in libogc2 is used as it is.
 
-Ce document décrit l'architecture retenue, ce qui est fait, et ce qui reste.
+This document describes the architecture that was settled on, what is done, and
+what is left.
 
 ---
 
@@ -13,377 +14,342 @@ Ce document décrit l'architecture retenue, ce qui est fait, et ce qui reste.
 ```sh
 make -f Makefile.gc            # -> build/gc/dkr.dol
 make -f Makefile.gc assets     # -> build/gc/dkr.assets
-make -f Makefile.gc dist       # les deux, dans dist/dkr/ a copier sur la carte SD
+make -f Makefile.gc dist       # both, in dist/dkr/ ready to copy to the SD card
 ```
 
-Trois reglages, tous documentes dans le Makefile :
+The knobs, all documented in the Makefile:
 
-| Variable | Defaut | Effet |
+| Variable | Default | Effect |
 |---|---|---|
-| `GC_EMBED_ASSETS` | `1` | Lie l'image d'assets dans l'executable. Indispensable sous Dolphin (voir plus bas) ; `0` produit le .dol de 1,3 Mo qui lit `dkr.assets` sur carte SD. |
-| `GC_MAIN_POOL_MB` | `4` | Taille du tas du jeu. |
-| `GC_DEBUG` | `0` | Active `gc_log` : trace de boot detaillee, compteurs par frame, diagnostics du walker de display list. |
-| `GC_NO_CULL` | `0` | Dessine les deux enroulements au lieu de couper les faces arriere. Diagnostic, pas une option de rendu. |
-| `GC_BILLBOARD` | `1` | Applique `G_MW_BILLBOARD` : un sommet devient un decalage par rapport au sommet 0, c'est ainsi que DKR place ses sprites. |
-| `GC_RENDERMODE` | `1` | `0` fige le blend et la profondeur comme avant le travail sur le mode de rendu. |
-| `GC_COMBINER` | `1` | `0` fige le TEV sur un modulate, comme avant la traduction de `G_SETCOMBINE`. |
-| `GC_TEXTEST` | `0` | Remplace chaque texture par une mire de coordonnees : prouve conversion, pavage 4x4 et coordonnees d'un coup. |
-| `GC_PROJ_TINT` | `0` | Vert = projection materielle, magenta = repli CPU. Teinte la couleur de sommet, donc un combineur qui ignore SHADE l'avale. |
-| `GC_CRASHTEST` | `0` | Faute volontairement deux secondes apres le boot, pour exercer le gestionnaire de plantage. Il rapporte aussi sur la console, donc c'est validable hors materiel. Ne jamais livrer a 1. |
-| `GC_FORCE_PAL` | `0` | Fait croire au portage que la console est PAL (640x576, EFB 528 lignes, +24 lignes du jeu). Diagnostic : le portage n'a jamais tourne qu'en NTSC et la console de l'utilisateur est PAL. Ne jamais livrer a 1. |
-| `GC_MEMCARD` | `1` | Utilise une carte pour sauvegarder. `0` coupe **tout** le sous-systeme de stockage : rien ne sonde ni ne monte de carte memoire, le Controller Pak repond « absent » (donc le jeu reste hors du code pak et rumble de `save_data.c`) et l'EEPROM vit en RAM. C'est exactement l'etat du portage avant le 2026-09-04. Isolation, pas une option. |
-| `GC_SDLOG` | `1` | Ecrit `sd:/dkr/dkr.log`. C'est le canal de diagnostic sur materiel reel, ou il n'y a pas d'USB Gecko. Sans carte montee, chaque appel est un compare et un retour. |
-| `GC_AUDIO_FX` | `1` | Laisse le jeu allumer la reverberation. `0` la refuse : l'A/B en une compilation pour « la reverberation est-elle responsable de ce que j'entends ». |
-| `GC_DYNLIT2` | `1` | `0` retransforme `calc_dynamic_lighting_for_object_2` en talon. Isolation, pas une option. |
+| `GC_EMBED_ASSETS` | `1` | Links the asset image into the executable. **A `1` build contains the ROM and must never be redistributed**; `0` produces the 1.4 MB .dol that reads `dkr.assets` from an SD card, and is what a release ships. |
+| `GC_MAIN_POOL_MB` | `4` | Size of the game's heap. |
+| `GC_DEBUG` | `0` | Turns on `gc_log`: a detailed boot trace, per-frame counters, display-list walker diagnostics. |
+| `GC_NO_CULL` | `0` | Draws both windings instead of culling back faces. A diagnostic, not a rendering option. |
+| `GC_BILLBOARD` | `1` | Applies `G_MW_BILLBOARD`: a vertex becomes an offset from vertex 0, which is how DKR places its sprites. |
+| `GC_RENDERMODE` | `1` | `0` freezes blending and depth the way they were before the render-mode work. |
+| `GC_COMBINER` | `1` | `0` freezes the TEV on a modulate, the way it was before `G_SETCOMBINE` was translated. |
+| `GC_TEXTEST` | `0` | Replaces every texture with a coordinate pattern: proves conversion, 4x4 tiling and coordinates in one go. |
+| `GC_PROJ_TINT` | `0` | Green = hardware projection, magenta = CPU fallback. It tints the vertex colour, so a combiner that ignores SHADE swallows it. |
+| `GC_CRASHTEST` | `0` | Faults on purpose two seconds into the boot, to exercise the crash handler. Never ship this at 1. |
+| `GC_FORCE_PAL` | `0` | Makes the port believe the console is PAL (640x576, a 528-line EFB, the game's extra 24 lines). A diagnostic. Never ship this at 1. |
+| `GC_MEMCARD` | `1` | Use a card for saving. `0` turns off the **whole** storage subsystem: nothing probes or mounts a memory card, the Controller Pak answers "absent" (so the game stays out of `save_data.c`'s pak and rumble code) and the EEPROM lives in RAM. That is exactly the state of the port before 2026-09-04. Isolation, not an option. |
+| `GC_SDLOG` | `1` | Writes `sd:/dkr/dkr.log`. This is *the* diagnostic channel on real hardware. With no card mounted, every call is a compare and a return. |
+| `GC_AUDIO_FX` | `1` | Let the game turn its reverb on. `0` refuses it: the one-build A/B for "is the reverb responsible for what I am hearing". |
+| `GC_DYNLIT2` | `1` | `0` turns `calc_dynamic_lighting_for_object_2` back into a stub. Isolation, not an option. |
 
-Les objets dependent aussi du fichier `build/gc/.cflags`, qui memorise les
-flags : changer `GC_DEBUG` ou `GC_MAIN_POOL_MB` reconstruit l'arbre au lieu de
-relier des objets compiles avec l'autre reglage.
+The objects also depend on `build/gc/.cflags`, which remembers the flags:
+changing `GC_DEBUG` or `GC_MAIN_POOL_MB` rebuilds the tree instead of linking
+objects compiled under the other setting.
 
-Utiliser le `make` de MSYS2 (`C:\msys64\usr\bin\make.exe`, GNU Make 4.4.1). Le
-`make` 3.82 natif present sur le PATH via `C:\fpc322` fonctionne aussi, mais il
-est ancien. Le Makefile trouve devkitPro tout seul et pose lui-meme `TMPDIR`
-dans l'arbre de build : sans ca, le gcc natif de devkitPPC tente d'ecrire ses
-fichiers intermediaires dans `C:\Windows` et echoue.
+Use MSYS2's `make` (`C:\msys64\usr\bin\make.exe`, GNU Make 4.4.1). The native
+`make` 3.82 that `C:\fpc322` puts on PATH also works, but it is old. The
+Makefile finds devkitPro by itself and sets `TMPDIR` inside the build tree:
+without that, devkitPPC's native gcc tries to write its intermediates into
+`C:\Windows` and fails.
 
-Le build N64 d'origine (`Makefile`) n'est pas touche.
+The original N64 build (`Makefile`) is untouched.
 
 ### Assets
 
-**Sous Dolphin, la carte SD n'existe pas.** La liste des peripheriques EXI
-GameCube de Dolphin ne contient aucune carte SD -- son support SD est
-Wii-seulement -- donc `sd:/` et `carda:/` ne peuvent jamais se resoudre en mode
-GameCube, et `fatInitDefault` ne trouve rien. C'est la raison d'etre de
-`GC_EMBED_ASSETS` : `platform/gc/assets_blob.S` fait un `.incbin` de l'image
-dans une section `.rodata`, et `gc_assets_open_embedded()` la televerse en ARAM
-par le meme chemin que la version SD. Les deux routes convergent donc sur un
-seul lecteur, et celle de la carte continue de fonctionner telle quelle sur
-materiel reel. Cout : 12 Mo des 24 de MEM1, et un .dol de 13,9 Mo.
+**Under Dolphin there is no SD card.** Dolphin's GameCube EXI device list has no
+SD card entry at all — its SD support is Wii-only — so `sd:/` and `carda:/` can
+never resolve in GameCube mode and `fatInitDefault` finds nothing. That is what
+`GC_EMBED_ASSETS` is for: `platform/gc/assets_blob.S` `.incbin`s the image into
+a `.rodata` section, and `gc_assets_open_embedded()` uploads it to ARAM through
+the same path the SD version uses. Both routes converge on one reader, so the
+card one keeps working untouched on real hardware. The cost is 12 MB of MEM1's
+24, and a 14 MB .dol.
 
-Le jeu ne charge pas ses donnees au demarrage : il garde une table d'offsets ROM
-et DMA les morceaux a la demande. Le portage conserve ce modele, et en tire une
-simplification : **l'image d'assets, c'est la ROM elle-meme**, copiee telle
-quelle. Chaque offset de la table tombe juste sans rebasage, et 12 Mo tiennent
-dans les 16 Mo d'ARAM. `make -f Makefile.gc assets` ne fait donc que copier la
-ROM depuis `baseroms/` — aucun outil d'extraction n'intervient.
+The game does not load its data at startup: it keeps a table of ROM offsets and
+DMAs pieces in on demand. The port keeps that model, and gets a simplification
+out of it: **the asset image *is* the ROM**, copied verbatim. Every offset in
+the table lands correctly with no rebasing, and 12 MB fits in ARAM's 16.
+`make -f Makefile.gc assets` therefore only copies the ROM out of `baseroms/` —
+no extraction tool is involved.
 
-Les deux symboles `__ASSETS_LUT_START` / `__ASSETS_LUT_END`, que
-`asset_loading.c` lit comme des adresses ROM, sont fournis a l'edition de liens
-depuis `ver/splat/dkr.us.v77.yaml` (`0xECB60` / `0xECC30`). Ils sont specifiques
-a la US 1.0.
+The two symbols `__ASSETS_LUT_START` / `__ASSETS_LUT_END`, which
+`asset_loading.c` reads as ROM addresses, are supplied at link time from
+`ver/splat/dkr.us.v77.yaml` (`0xECB60` / `0xECC30`). They are specific to
+US 1.0.
 
-### `asset_enums.h` (fait -- a refaire seulement pour une autre revision de ROM)
+### `asset_enums.h` (done — redo it only for another ROM revision)
 
-`include/asset_enums.h` est genere par `dkr_assets_tool`, et **aucun** fichier
-de `src/` ne compile sans lui.
+`include/asset_enums.h` is generated by `dkr_assets_tool`, and **no** file in
+`src/` compiles without it.
 
-Il n'est pas contournable : sur les 352 symboles `ASSET_*` que le code du jeu
-reference, 128 se deduisent de `tools/dkr_assets_tool_extract.json`, mais les
-224 autres (`ASSET_MENU_TEXT_*`, `ASSET_FONTS_*`) sont nommes d'apres des
-chaines et des polices qui vivent *dans* les assets — ils n'existent qu'une fois
-l'extraction faite.
+There is no way around it: of the 352 `ASSET_*` symbols the game code
+references, 128 can be derived from `tools/dkr_assets_tool_extract.json`, but
+the other 224 (`ASSET_MENU_TEXT_*`, `ASSET_FONTS_*`) are named after strings and
+fonts that live *inside* the assets — they only exist once the extraction has
+been done.
 
-L'outil se construit et se lance sous Windows, mais son extraction se termine en
-silence sans rien ecrire. Le chemin sur est celui que le depot supporte
-officiellement :
+The tool builds and runs under Windows, but its extraction ends silently
+without writing anything. The safe path is the one the repository officially
+supports:
 
 ```sh
-wsl                                              # une fois : wsl --install
+wsl                                              # once: wsl --install
 cd /mnt/c/Users/jacqu/Documents/DKR-GC/dkr
 ./tools/gc/extract-asset-enums.sh
 ```
 
-Le script verifie le SHA1 de la ROM, installe les dependances, construit
-l'outil, lance splat puis l'extraction, et s'arrete des que `asset_enums.h`
-existe. Ensuite tout se rebuild normalement cote Windows.
+The script checks the ROM's SHA1, installs the dependencies, builds the tool,
+runs splat and then the extraction, and stops as soon as `asset_enums.h`
+exists. After that everything rebuilds normally on the Windows side.
 
-### Notes de construction sous Windows
+### Build notes for Windows
 
-Deja applique dans ce depot, mais bon a savoir si l'environnement bouge :
+Already applied in this repository, but worth knowing if the environment
+changes:
 
-- Le depot etait en CRLF (`core.autocrlf=true`), ce que le parseur C de
-  `dkr_assets_tool` refuse. Il est desormais en LF, avec `core.autocrlf=false`
-  en local.
-- splat doit tourner en mode UTF-8 (`PYTHONUTF8=1`), sinon il lit les sources
-  avec la locale du systeme et echoue sur un octet 0x81.
-- `dkr_assets_tool` se compile avec le g++ **POSIX** de MSYS2
-  (`C:\msys64\usr\bin\g++`), pas celui de mingw64 : `std::filesystem::path` ne
-  se convertit implicitement en `std::string` que sur POSIX.
-
----
-
-## Deboguer le portage
-
-> **Règle, posée le 2026-09-04 : on ne teste plus jamais rien sous Dolphin.**
-> Pas même « juste pour vérifier qu'on n'a rien cassé ». L'émulateur est
-> indulgent exactement là où ce portage se trompe — MMU, caches, alignement,
-> EXI — donc un run vert n'y prouve rien, et **aucun** des défauts matériels du
-> projet n'y était reproductible. Chaque compilation part sur la carte SD, et
-> le journal est l'instrument. Ce qui suit sur Dolphin est conservé comme
-> archive de ce qui a été appris, pas comme mode opératoire.
-
-La console framebuffer ne sert que jusqu'a la premiere frame : des que GX
-recopie son EFB, le texte disparait. Tout ce qui est interessant se passe
-apres.
-
-**Sur materiel reel, le canal de debug est `sd:/dkr/dkr.log`.** Tout ce que
-`gc_log` et `gc_fatal` impriment y va aussi, et le gestionnaire de plantage y
-ecrit son rapport complet. C'est la seule facon de recuperer quoi que ce soit
-d'une session sur console. Voir « Le journal sur carte SD » plus bas.
-
-**Et l'ecran de plantage est le second canal, sur console.** libogc affiche les
-registres, `SRR0`, `DAR`, une trace de pile et un extrait de code. Une
-photographie de la television, passee a `powerpc-eabi-addr2line` contre l'ELF de
-la compilation exacte, a donne en une fois ce que quatre sessions instrumentees
-n'avaient pas donne. **Figer l'ELF a chaque livraison** est ce qui rend ca
-possible : le .dol seul ne se resout pas.
-
-Attention en le lisant : **un registre que l'exception rapportee n'ecrit pas est
-une trace de l'exception d'avant.** `DAR` et `DSISR` ne sont pas mis a jour par
-une exception « Interrupt », « Decrementer » ou « Floating Point », et c'est
-justement un `DAR` perime qui a nomme la seconde cause racine.
-
-**Sous Dolphin, le canal de debug est la console USB Gecko** (la carte SD
-n'existe pas en mode GameCube, donc le journal ne s'ouvre pas). `gc_main.c`
-appelle `CON_EnableGecko(EXI_CHANNEL_1, TRUE)` **seulement si libfat n'occupe
-pas ce slot** : sur la console de l'utilisateur, le lecteur SD *est* en slot B,
-et un USB Gecko et un SD Gecko sont tous deux le peripherique EXI 0 de leur
-canal. Dolphin emule le Gecko en serveur TCP sur `127.0.0.1:55020` ; cote
-Dolphin il faut `SlotB = 7` dans `Config/Dolphin.ini`. Un client TCP qui se
-connecte et vide le flux dans un fichier suffit ; le lancer *avant* Dolphin
-evite de perdre la trace de boot.
-
-**Apres la premiere frame, la console framebuffer est repointee sur un tampon
-prive de 320x32.** Elle coutait 686 Ko de `memcpy` non cache par ligne defilee
-dans le framebuffer que GX possede, ce qui a mesure la moitie de la machine ;
-et `gc_console_set(FALSE)` fait taire les `printf` du portage quand aucun Gecko
-n'ecoute. Ni l'un ni l'autre ne touche le journal SD, qui n'est jamais passe par
-printf.
-
-**Le stub GDB de Dolphin n'est pas utilisable ici.** Avec `GDBPort` positionne,
-l'emulation passe en interprete : en 250 s le jeu n'atteint meme pas l'init
-video, a cause du televersement de 12 Mo en ARAM. Les compteurs et la console
-Gecko repondent aux memes questions en quelques secondes.
-
-**Et l'avertissement le plus cher de tous : Dolphin est indulgent exactement la
-ou le portage differe le plus du materiel.** Il n'emule pas la MMU pour du
-homebrew — ecrire a l'adresse 4 ou a 0xDEADBEE0 y reussit tranquillement, et il
-faut `__builtin_trap()` pour en tirer une exception. Les caches, l'alignement et
-l'EXI sont dans le meme cas. **Quatre des defauts trouves le 2026-09-04
-n'existaient que sur console et aucun n'etait reproductible sous l'emulateur.**
-Quand un symptome n'apparait que sur materiel, ne pas insister avec Dolphin :
-instrumenter la console.
-
-**Ce que `GC_DEBUG=1` fait afficher**, une fois par seconde, depuis le thread de
-boot :
-
-- les taches que le scheduler a distribuees (gfx, audio) ;
-- la chaine du message de retrace, comptee a chaque saut : l'interruption VI qui
-  poste vers le scheduler, les posts perdus faute de place, ce que le scheduler
-  a recu et ce qu'il a reexpedie a ses clients ;
-- les entrees/sorties de `gc_gfx_run_dl`, `gc_video_swap`, `gc_gfx_copy_display`
-  et `fb_update` : un compteur qui entre sans ressortir *nomme* l'appel qui a
-  bloque ;
-- ou le thread de jeu s'est endormi (adresse de retour de l'appelant d'un
-  `osRecvMesg` bloquant, a resoudre avec `powerpc-eabi-addr2line`), et zero s'il
-  n'est pas bloque mais en boucle ;
-- un debordement de pile, via une sentinelle en bas de chaque pile.
-
-C'est cette instrumentation qui a permis de localiser les quatre blocages
-decrits dans « Corrige recemment » plus bas, sans debogueur.
+- The repository was in CRLF (`core.autocrlf=true`), which `dkr_assets_tool`'s
+  C parser refuses. It is in LF now, with a local `core.autocrlf=false`.
+- splat has to run in UTF-8 mode (`PYTHONUTF8=1`), or it reads the sources with
+  the system locale and fails on a 0x81 byte.
+- `dkr_assets_tool` compiles with MSYS2's **POSIX** g++
+  (`C:\msys64\usr\bin\g++`), not the mingw64 one: `std::filesystem::path` only
+  converts implicitly to `std::string` on POSIX.
 
 ---
 
+## Debugging the port
+
+> **Rule, set on 2026-09-04: nothing is ever tested under Dolphin again.**
+> Not even "just to check nothing broke". The emulator is forgiving in exactly
+> the places where this port differs most from the hardware — MMU, caches,
+> alignment, EXI — so a green run there proves nothing, and **none** of the
+> project's hardware defects was reproducible on it. Every build goes to the SD
+> card, and the log is the instrument. What follows about Dolphin is kept as a
+> record of what was learned, not as a procedure.
+
+The framebuffer console is only useful up to the first frame: as soon as GX
+copies its EFB out, the text disappears. Everything interesting happens after
+that.
+
+**On real hardware the debug channel is `sd:/dkr/dkr.log`.** Everything
+`gc_log` and `gc_fatal` print goes there too, and the crash handler writes its
+full report there. It is the only way to get anything at all out of a console
+session. See "The log on the SD card" below.
+
+**And the crash screen is the second channel, on console.** libogc shows the
+registers, `SRR0`, `DAR`, a stack trace and a code excerpt. A photograph of the
+television, fed to `powerpc-eabi-addr2line` against the ELF of that exact
+build, gave in one go what four instrumented sessions had not. **Freezing the
+ELF on every delivery** is what makes that possible: the .dol alone does not
+resolve.
+
+Careful when reading it: **a register the reported exception does not write is
+evidence about the previous one.** `DAR` and `DSISR` are not updated by an
+"Interrupt", "Decrementer" or "Floating Point" exception, and it was precisely
+a stale `DAR` that named the second root cause.
+
+**Under Dolphin the debug channel was the USB Gecko console** (there is no SD
+card in GameCube mode, so the log never opens). `gc_main.c` calls
+`CON_EnableGecko(EXI_CHANNEL_1, TRUE)` **only if libfat does not hold that
+slot**: on the user's console the SD reader *is* in slot B, and a USB Gecko and
+an SD Gecko are both EXI device 0 of their channel. Dolphin emulates the Gecko
+as a TCP server on `127.0.0.1:55020`, with `SlotB = 7` in `Config/Dolphin.ini`.
+
+**After the first frame the framebuffer console is re-pointed at a private
+320x32 buffer.** It was costing 686 KB of uncached `memcpy` per scrolled line
+into the framebuffer GX owns, which measured half the machine; and
+`gc_console_set(FALSE)` silences the port's `printf`s when no Gecko is
+listening. Neither touches the SD log, which never went through printf.
+
+**Dolphin's GDB stub was never usable here.** With `GDBPort` set, emulation
+drops to an interpreter: in 250 s the game does not even reach video init,
+because of the 12 MB ARAM upload. The counters and the Gecko console answer the
+same questions in seconds.
+
+**And the most expensive warning of all: Dolphin is forgiving exactly where the
+port differs most from the hardware.** It does not emulate the MMU for
+homebrew — writing to address 4 or to 0xDEADBEE0 succeeds quietly there, and it
+takes a `__builtin_trap()` to get an exception out of it. Caches, alignment and
+EXI are in the same position. **Four of the defects found on 2026-09-04 existed
+only on console and none was reproducible under the emulator.**
+
+**What `GC_DEBUG=1` prints**, once a second, from the boot thread:
+
+- the tasks the scheduler dispatched (gfx, audio);
+- the retrace message chain, counted at each hop: the VI interrupt posting to
+  the scheduler, the posts dropped for want of room, what the scheduler
+  received and what it forwarded to its clients;
+- entries into and exits from `gc_gfx_run_dl`, `gc_video_swap`,
+  `gc_gfx_copy_display` and `fb_update`: a counter that goes in without coming
+  out *names* the call that hung;
+- where the game thread went to sleep (the return address of whoever called a
+  blocking `osRecvMesg`, to be resolved with `powerpc-eabi-addr2line`), and
+  zero if it is not blocked but spinning;
+- a stack overflow, through a sentinel below every stack.
+
+It is this instrumentation that located the four hangs described in "Fixed
+recently" below, with no debugger.
+
+---
 ## Architecture
 
-Le code du jeu (`src/`, ~80 000 lignes) n'est pas modifié. Tout le portage vit
-dans `platform/gc/`, qui remplace `libultra/` et les trois fichiers de `src/`
-qui décrivent le matériel N64 plutôt que le jeu.
+The game code (`src/`, ~80 000 lines) is not modified. The whole port lives in
+`platform/gc/`, which replaces `libultra/` and the three files in `src/` that
+describe N64 hardware rather than the game.
 
 ```
 platform/gc/
-  gc_main.c          point d'entrée, remplace src/main.c
-  gc_video.c         VI + framebuffers, remplace src/video.c
-  gc_assets.c        image d'assets en ARAM
-  gc_ultra.h         surface interne de la couche
-  include/PR/        headers qui masquent ceux de include/PR
-  gc_storage.c       un blob nomme : carte memoire, puis carte SD
-  gc_logfile.c       le journal sur carte SD
-  gc_crash.c         le gestionnaire de plantage (vecteurs PowerPC)
-  gc_n64io.c         les registres materiels N64, repondus au lieu d'etre lus
-  gc_assert.c        `__assert` avec l'ordre d'arguments du decompile
-  ultra/             libultra sur libogc2 (12 fichiers)
+  gc_main.c          entry point, replaces src/main.c
+  gc_video.c         VI + framebuffers, replaces src/video.c
+  gc_assets.c        the asset image in ARAM
+  gc_ultra.h         the layer's internal surface
+  include/PR/        headers that shadow the ones in include/PR
+  gc_storage.c       one named blob: memory card, then SD card
+  gc_logfile.c       the log on the SD card
+  gc_crash.c         the crash handler (PowerPC vectors)
+  gc_n64io.c         N64 hardware registers, answered instead of read
+  gc_assert.c        `__assert` with the decompilation's argument order
+  ultra/             libultra on libogc2 (12 files)
   gfx/               F3DDKR -> GX
-  audio/             liste de commandes audio -> mixeur logiciel
+  audio/             audio command list -> software mixer
 ```
 
-### Trois décisions structurantes
+### Three structural decisions
 
-**1. Le boutisme joue en notre faveur.** MIPS N64 et PowerPC Gekko sont tous
-deux big-endian. Les données d'assets, les display lists et les échantillons
-audio se lisent tels quels, sans byte-swap. C'est la raison principale pour
-laquelle ce portage est nettement plus simple vers la GameCube que vers une
-cible little-endian.
+**1. Endianness is on our side.** N64 MIPS and Gekko PowerPC are both
+big-endian. Asset data, display lists and audio samples are read as they are,
+with no byte swap. That is the main reason this port is markedly simpler
+towards the GameCube than towards a little-endian target.
 
-**2. Le scheduler est la couture du portage.** Sur N64, le thread scheduler
-arbitre le RSP et le RDP : il met les tâches en file, les lance, attend les
-interruptions de fin. Ici aucun des deux coprocesseurs n'existe, donc
-`platform/gc/ultra/os_sched.c` exécute la tâche immédiatement — une display
-list part dans l'interpréteur GX, une liste de commandes audio dans le mixeur —
-et renvoie le message de fin. Tout l'arbitrage disparaît, la messagerie est
-préservée à l'identique. C'est elle qui cadence le jeu.
+**2. The scheduler is the port's seam.** On the N64 the scheduler thread
+arbitrates the RSP and the RDP: it queues tasks, kicks them off, waits for the
+completion interrupts. Here neither coprocessor exists, so
+`platform/gc/ultra/os_sched.c` runs the task immediately — a display list goes
+into the GX interpreter, an audio command list into the mixer — and sends the
+completion message. All the arbitration disappears; the messaging is preserved
+exactly. It is what paces the game.
 
-**3. L'ARAM remplace la cartouche.** L'image d'assets fait ~12 Mo pour 24 Mo de
-MEM1, et le jeu veut un gros tas. Les 16 Mo d'ARAM sont inutilisés dans un port
-comme celui-ci, ne sont pas adressables par le CPU, et y accéder demande un DMA
-— exactement l'opération qu'on émule. `osPiStartDma` devient une requête ARQ.
-`asset_loading.c` et `memory.c` ne bougent pas.
+**3. ARAM replaces the cartridge.** The asset image is ~12 MB against MEM1's
+24, and the game wants a large heap. ARAM's 16 MB are unused in a port like
+this one, are not addressable by the CPU, and reaching them takes a DMA —
+exactly the operation being emulated. `osPiStartDma` becomes an ARQ request.
+`asset_loading.c` and `memory.c` do not move.
 
-### Collision de types PR / libogc
+### PR / libogc type collision
 
-`PR/gbi.h` et `<ogc/gx.h>` définissent tous les deux `Mtx` et `Vtx`, avec des
-sens incompatibles. Une unité de compilation ne peut pas voir les deux.
+`PR/gbi.h` and `<ogc/gx.h>` both define `Mtx` and `Vtx`, with incompatible
+meanings. One translation unit cannot see both.
 
-Le renderer vit donc entièrement du côté libogc : `platform/gc/gfx/gfx_gx.h`
-n'expose que des types simples (`const void *`), et le scheduler — qui est du
-côté PR — appelle à travers cette frontière. Les quelques valeurs d'opcodes GBI
-nécessaires sont redéfinies dans `gfx_gx.c`.
+So the renderer lives entirely on the libogc side: `platform/gc/gfx/gfx_gx.h`
+exposes nothing but plain types (`const void *`), and the scheduler — which is
+on the PR side — calls across that boundary. The few GBI opcode values that are
+needed are redefined in `gfx_gx.c`.
 
-Deux autres frictions de headers, réglées :
+Two other header frictions, settled:
 
-- `PR/ultratypes.h` écrit `u32` comme `unsigned long`, `<gctypes.h>` comme
-  `unsigned int`. `platform/gc/include/PR/ultratypes.h` masque le header N64 et
-  délègue à `<gctypes.h>`, ce qui aligne tout l'arbre sur la bibliothèque contre
-  laquelle on édite les liens.
-- `PR/os_libc.h` déclare `bcopy`/`bcmp`/`bzero` avec des `int`. Le décompilé
-  prévoit déjà `-DMODERN_CC` pour basculer sur `size_t` ; c'est dans le Makefile.
+- `PR/ultratypes.h` writes `u32` as `unsigned long`, `<gctypes.h>` as
+  `unsigned int`. `platform/gc/include/PR/ultratypes.h` shadows the N64 header
+  and delegates to `<gctypes.h>`, which aligns the whole tree on the library it
+  links against.
+- `PR/os_libc.h` declares `bcopy`/`bcmp`/`bzero` with `int`s. The
+  decompilation already provides `-DMODERN_CC` to switch them to `size_t`; it
+  is in the Makefile.
 
 ---
 
-## État
+## Status
 
-**Le jeu tourne, s'affiche et se navigue sous Dolphin.** Le .dol monte la
-video, libultra, GX et la manette, televerse ses assets en ARAM, et la boucle de
-jeu s'execute de façon stable sans un seul message de retrace perdu. Toute la
-boucle d'attract rend : l'ecran-titre avec son logo, le survol d'introduction,
-l'ecran de selection de personnage et les courses de demonstration. START amene
-au menu puis au carrousel de personnages.
+**On real hardware (a PAL console), as of 2026-09-04: it boots, it draws, and
+it runs at the nominal rate.** Eight console sessions, each documented below
+with what it taught. Four defects that Dolphin could not show were found and
+fixed:
 
-**Sur materiel reel (console PAL), au 2026-09-04 : il boote, il dessine, et il
-tourne a la vitesse nominale.** Sept sessions sur console, chacune documentee
-plus bas avec ce qu'elle a appris. Quatre defauts que Dolphin ne pouvait pas
-montrer ont ete trouves et corriges :
+1. **The USB Gecko console was writing into the SD Gecko** — same EXI channel,
+   since the port's first day.
+2. **The graphics task's completion message**: the port sent `task->msg` as it
+   was, while the real scheduler substitutes an array when the task carries
+   none — which is the case for *every* DKR graphics task. The game
+   dereferenced NULL on every frame.
+3. **An N64 hardware register** read directly by `cam_init`, unmapped here.
+4. **`__assert`**, whose decompilation and newlib signatures share a name, take
+   three arguments each, and are in **opposite order**.
 
-1. **La console USB Gecko ecrivait dans le SD Gecko** — meme canal EXI, depuis
-   le premier jour du portage.
-2. **Le message de fin de tache graphique** : le portage renvoyait `task->msg`
-   tel quel, alors que le vrai scheduler substitue un tableau quand la tache
-   n'en porte pas — ce qui est le cas de *toutes* les taches graphiques de DKR.
-   Le jeu dereferencait NULL a chaque image.
-3. **Un registre materiel N64** lu en dur par `cam_init`, non mappe ici.
-4. **`__assert`**, dont la signature du decompile et celle de newlib ont le meme
-   nom, trois arguments chacune, et **l'ordre inverse**.
+Plus two performance and reliability fixes: the framebuffer console was costing
+half the machine (measured: 1659 ms per 60 retraces, against 1200 after), and
+the log was corrupting the FAT by growing.
 
-Plus deux corrections de performance et de fiabilite : la console framebuffer
-coutait la moitie de la machine (mesure : 1659 ms pour 60 retraces, contre 1200
-apres), et le journal corrompait la FAT en s'allongeant.
+**None of those four defects reproduced under the emulator.** That is the
+central methodological point of the day; see the end of "Left to do".
 
-**Aucun de ces quatre defauts ne se reproduisait sous l'emulateur.** C'est le
-point de methode central de la journee ; voir la fin de « Reste a faire ».
+State measured on the eighth session, the first where the game really runs:
 
-Etat mesure a la huitieme session, la premiere ou le jeu tourne vraiment :
-
-    clock: 1200 ms since last beat (60 VSyncs)     <- exact pour du 50 Hz
+    clock: 1200 ms since last beat (60 VSyncs)     <- exact for 50 Hz
     dkr-gc: 180 retr | task gfx 129 | vi 180/0 | dl 129/129 swap 129/129 copy 129/129
-    ignored:          <- vide
-    aud-ign:          <- vide
+    ignored:          <- empty
+    aud-ign:          <- empty
     n64 io: 3 reads, 0 unknown | asserts 0
 
-Cent vingt-neuf images rendues en cent quatre-vingts retraces, **zero message de
-retrace perdu** (contre plus de perdus que recus deux sessions plus tot),
-entrees egales aux sorties partout, et les trois assertions de `env.c` ne se
-declenchent pas -- le piege `__assert` etait latent, pas actif.
+One hundred and twenty-nine frames rendered in one hundred and eighty
+retraces, **zero dropped retrace messages** (against more dropped than received
+two sessions earlier), inputs equal to outputs everywhere, and the three
+assertions in `env.c` do not fire — the `__assert` trap was latent, not active.
 
-**Le defaut ouvert que cette session a revele** est dans le chargement des
-assets, pas dans le rendu : voir « Un asset ne se decompresse pas ».
+**Nothing is stubbed.** `platform/gc/stubs.c` holds only symbols that are inert
+by construction (RSP/RDP status registers, microcode images). The Controller
+Pak, the crash handler and the seven entry points of `thread0_epc.c` are
+ported, not answered.
 
-**L'audio, au 2026-09-04 : la saturation est corrigée, cause racine trouvée.**
-La moitié de chaque trame audio était du bruit — `a_interleave` n'écrivait que
-la moitié des échantillons attendus et le reste du tampon partait en DRAM tel
-quel, c'est-à-dire la sortie brute du rééchantillonneur à pleine échelle. Voir
-« `a_interleave` » plus bas. Les quinze opcodes de l'ABI sont maintenant
-implémentés, `A_POLEF` compris, donc **la réverbération est rallumée**
-(`GC_AUDIO_FX ?= 1`). Mesuré après correction : 0 à 64 échantillons écrêtés sur
-18 000 par tâche audio, contre un pic collé à 32767 à presque chaque battement
-avant. Reste à valider à l'oreille sur matériel réel.
+**A log is written to the SD card** (`sd:/dkr/dkr.log`). It is the diagnostic
+channel on real hardware, where there is no USB Gecko. See "The log on the SD
+card".
 
-**Aucun talon ne subsiste.** `platform/gc/stubs.c` ne contient plus que des
-symboles inertes par construction (registres RSP/RDP, images de microcode). Le
-Controller Pak, le gestionnaire de plantage et les sept points d'entrée de
-`thread0_epc.c` sont portés, pas répondus.
+**What is still wrong**, as reported from console on 2026-09-04 and measured in
+"Four symptoms from the ninth session": audio crackle, flickering character
+shadows, menu text that does not appear, and 2D sprites — balloons, the banana
+count, the in-race HUD — that are wrong. Those are now the whole list.
 
-**Un journal est écrit sur la carte SD** (`sd:/dkr/dkr.log`) : c'est le canal de
-diagnostic sur matériel réel, où il n'y a pas d'USB Gecko. Voir « Le journal sur
-carte SD ».
+### The progress measurement, and how to read it (2026-09-02)
 
-### La mesure d'avancement, et comment la relire (2026-09-02)
-
-Le walker avale en silence toute commande qu'il ne connait pas (`default:
-break;`), donc « il reste beaucoup de bugs graphiques » n'avait pas de liste. Il
-**compte desormais ce qu'il jette**, par opcode, et le heartbeat l'imprime :
+The walker silently swallowed any command it did not know (`default: break;`),
+so "there are still a lot of graphics bugs" had no list behind it. It now
+**counts what it drops**, per opcode, and the heartbeat prints it:
 
     ignored: b4:1 f9:1
 
-C'est la mesure d'avancement du renderer. Vide, le rendu est complet vis-a-vis
-de ce que le jeu envoie ; chaque entree est une fonctionnalite manquante, avec
-la frequence qui dit ce qu'elle coute.
+That is the renderer's progress measurement. Empty, and the rendering is
+complete with respect to what the game sends; every entry is a missing feature,
+with a frequency that says what it costs.
 
-Releve sur 84 frames couvrant intro, menus et une course de demo : **le jeu
-emet 33 opcodes, le port en traite 31, il en ignore 2.** Le releve du matin en
-comptait sept ; les cinq autres (`b6` `b7` `f8` `fe` `ff`) ont ete traites dans
-la journee -- voir le brouillard et les cibles de rendu plus bas.
+Taken over 84 frames covering the intro, the menus and a demo race: **the game
+emits 33 opcodes, the port handles 31, it ignores 2.** The morning's reading
+counted seven; the other five (`b6` `b7` `f8` `fe` `ff`) were handled during
+the day — see fog and render targets below.
 
-| Opcode | Nom | /frame | Ce qui reste a faire |
+| Opcode | Name | /frame | What was left |
 |---|---|---|---|
-| `b4` | `G_PERSPNORMALIZE` | 1,3 | echelle sur `w` avant division. Impact attendu faible : la projection materielle calcule ses coefficients exactement depuis la matrice, donc l'echelle n'a rien a corriger. |
-| `f9` | `G_SETBLENDCOLOR` | 1,0 | lue par un blender dont `P = G_BL_CLR_BL`. Aucun mode de rendu mesure ne le fait : tous les `omL` releves ont `P = CLR_IN` ou `CLR_FOG`. |
+| `b4` | `G_PERSPNORMALIZE` | 1.3 | a scale on `w` before the divide. Expected impact low: the hardware projection computes its coefficients exactly from the matrix, so the scale has nothing to correct. |
+| `f9` | `G_SETBLENDCOLOR` | 1.0 | read by a blender whose `P = G_BL_CLR_BL`. No measured render mode does that: every `omL` seen has `P = CLR_IN` or `CLR_FOG`. |
 
-Les trois syncs (`e6` `e7` `e9`) sont nommes explicitement dans le `switch`
-plutot que laisses au `default`, pour qu'ils n'apparaissent pas comme du
-travail : ils ordonnancent le pipeline du RDP contre lui-meme et il n'y a pas
-de RDP ici.
+*(Both were implemented later the same week; `ignored:` and `aud-ign:` are both
+empty now.)*
 
-**Pour refaire le releve** : `tools/gc/run.ps1` fait toute la boucle -- il tue
-les Dolphin qui trainent, lance le .dol, se connecte au socket Gecko, pilote la
-manette, prend des captures a intervalle et detecte une sortie de Dolphin.
+The three syncs (`e6` `e7` `e9`) are named explicitly in the `switch` rather
+than left to the `default`, so they do not show up as work: they order the RDP's
+pipeline against itself and there is no RDP here.
 
-    tools/gc/run.ps1 -Tag gap -Seconds 130 -Presses "28:ENTER,34:ENTER,42:X"
+**To retake the reading**, the recipe was `tools/gc/run.ps1` driving Dolphin.
+That script still exists but **must not be used** — see the rule at the top of
+"Debugging the port". The same reading is now taken from `sd:/dkr/dkr.log` on
+console, which prints the identical `ignored:` line.
+### Fix of 2026-09-02: `G_FILLRECT` does not mean "flat fill"
 
-Les touches se donnent en `seconde:touche` (ENTER = START, X = A, Z = B). Les
-captures et le log atterrissent dans `build/gc/capture/`. Puis
+**This is what was painting the game black**, and the diagnosis fitted in one
+line of instrumentation.
 
-    grep "ignored:" build/gc/capture/gap.log | tr ' ' '\n' | grep ":" | grep -v ignored \
-      | awk -F: '{c[$1]+=$2; n[$1]++} END {for (o in c) printf "%s %d %d\n", o, c[o], n[o]}' \
-      | sort
+What `G_FILLRECT` does depends on the **cycle type**. In `G_CYC_FILL` the RDP
+short-circuits the combiner and the blender and writes the fill colour straight
+into the framebuffer — that is the clear at the head of a frame. In
+`G_CYC_1CYCLE` or `G_CYC_2CYCLE` it does nothing of the sort: the rectangle is
+an ordinary primitive that goes through the combiner and the blender, and the
+fill colour is never consulted.
 
-Hors renderer, il reste le mixeur audio (zero opcode de l'ABI ecrit), la carte
-memoire, le gestionnaire de plantage, et deux fichiers d'assembleur MIPS --
-`obj_animate.s` et `obj_shade_fast.s`, les deux qui se voient a l'ecran.
-
-### Correction du 2026-09-02 : `G_FILLRECT` ne veut pas dire « aplat »
-
-**C'est ce qui peignait le jeu en noir**, et le diagnostic a tenu en une ligne
-d'instrumentation.
-
-Ce que fait `G_FILLRECT` depend du **type de cycle**. En `G_CYC_FILL` le RDP
-court-circuite le combineur et le blender et ecrit la couleur de remplissage
-directement dans le framebuffer -- c'est le clear en tete de frame. En
-`G_CYC_1CYCLE` ou `G_CYC_2CYCLE` il ne fait rien de tel : le rectangle est une
-primitive ordinaire qui passe par le combineur et le blender, et la couleur de
-remplissage n'est jamais consultee.
-
-DKR se sert de la seconde forme pour ses fondus, et le dit mot pour mot --
-`transition_render_fullscreen`, `src/fade_transition.c` :
+DKR uses the second form for its fades, and says so word for word —
+`transition_render_fullscreen`, `src/fade_transition.c`:
 
 ```c
 gSPDisplayList(dTransitionFadeSettings);   /* G_CYC_1CYCLE, G_RM_CLD_SURF */
@@ -392,291 +358,285 @@ gDPSetCombineMode(G_CC_PRIMITIVE, G_CC_PRIMITIVE);
 gDPFillRectangle(0, 0, w, h);
 ```
 
-La couleur du rectangle est donc PRIMITIVE et son alpha celui du fondu. Hors
-transition cet alpha vaut **zero** et le rectangle est invisible. Le port le
-dessinait en aplat opaque : un rectangle noir opaque sur toute la surface, en
-**derniere primitive de chaque frame de jeu**, par-dessus dix-sept cents
-triangles correctement dessines en dessous.
+So the rectangle's colour is PRIMITIVE and its alpha is the fade's. Outside a
+transition that alpha is **zero** and the rectangle is invisible. The port drew
+it as an opaque flat fill: an opaque black rectangle over the whole surface, as
+the **last primitive of every game frame**, on top of seventeen hundred
+triangles drawn correctly underneath.
 
-Mesure, avec le releveur `cover` ajouté pour l'occasion :
+Measured, with the `cover` reporter added for the occasion:
 
     cover kind4 area 1000/1000 (0,0)-(1000,1000) seq 1725/1725
       | cc fcffffff fffdf6fb omH 00802c0f omL 00504340
       | col 000000ff prim 00000000
 
-soit : un fill plein ecran, dernier de la liste, en un-cycle (`omH` bits 20..21
-a 0), mode de rendu `G_RM_CLD_SURF`, couleur primitive noire d'alpha zero. Les
-frames magenta etaient le meme rectangle avec une autre couleur de remplissage.
+that is: a full-screen fill, last in the list, in one-cycle (`omH` bits 20..21
+at 0), render mode `G_RM_CLD_SURF`, primitive colour black with zero alpha. The
+magenta frames were the same rectangle with a different fill colour.
 
-Correctif dans `gfx_fill_rect` : cycle FILL -> aplat comme avant, precede d'un
-`gfx_set_2d_state()` explicite parce que le lot precedent a pu laisser le
-blender allume ; sinon quad blanc a travers `apply_combiner_current(FALSE)` et
-`apply_render_mode()`, la couleur venant du combineur.
+The fix, in `gfx_fill_rect`: FILL cycle -> a flat fill as before, preceded by
+an explicit `gfx_set_2d_state()` because the previous batch may have left the
+blender on; otherwise a white quad through `apply_combiner_current(FALSE)` and
+`apply_render_mode()`, with the colour coming from the combiner.
 
-Resultat : plus une seule frame noire ni magenta sur 170 s d'attract. Le logo
-de l'ecran-titre, les huit personnages de PLAYER SELECT et les courses de
-demonstration apparaissent, tous invisibles jusque-la.
+Result: not one black or magenta frame in 170 s of attract mode. The title
+screen logo, the eight characters of PLAYER SELECT and the demo races all
+appeared, having been invisible until then.
 
-### Brouillard, mode geometrie et cibles de rendu (2026-09-02)
+### Fog, geometry mode and render targets (2026-09-02)
 
-Trois des sept opcodes ignores traites ensemble, parce que la mesure a montre
-qu'ils n'en font qu'un.
+Three of the seven ignored opcodes handled together, because the measurement
+showed they are really one.
 
-**Le mode geometrie ne sert qu'a une chose ici.** Releve sur 84 frames :
-`geo set 00010205 clear 001f3205`. Les bits `G_CULL_FRONT` (0x1000) et
-`G_CULL_BACK` (0x2000) n'apparaissent **que dans le masque d'effacement,
-jamais dans celui de pose** -- le culling par mode geometrie ne s'active donc
-jamais, et le drapeau `BACKFACE_DRAW` par triangle, deja honore, est toute
-l'histoire. `G_LIGHTING` est lui aussi seulement efface (DKR fait son ombrage
-lui-meme, dans `obj_shade_fast`). Le seul bit qui compte est **`G_FOG`**, pose
-et efface pour de bon. Cela reduit « implementer le mode geometrie » a
-« implementer le brouillard », ce qui n'etait pas evident depuis la source.
+**Geometry mode serves exactly one purpose here.** Taken over 84 frames:
+`geo set 00010205 clear 001f3205`. The `G_CULL_FRONT` (0x1000) and
+`G_CULL_BACK` (0x2000) bits appear **only in the clear mask, never in the set
+mask** — geometry-mode culling therefore never turns on, and the per-triangle
+`BACKFACE_DRAW` flag, already honoured, is the whole story. `G_LIGHTING` is
+likewise only cleared (DKR does its own shading, in `obj_shade_fast`). The only
+bit that matters is **`G_FOG`**, genuinely set and cleared. That reduces
+"implement geometry mode" to "implement fog", which was not obvious from the
+source.
 
-**Le brouillard.** Sur N64 le RSP ecrit le facteur de brouillard **dans l'alpha
-du sommet**, et le blender le consomme en cycle 1 via `G_RM_FOG_SHADE_A`. Le
-port fait pareil : `gSPFogPosition` arrive en `G_MW_FOG` et donne les deux
-coefficients (`fogMul = (s16)(w1 >> 16)`, `fogOff = (s16)w1`), chaque sommet
-recoit `alpha = z/w * fogMul + fogOff` borne a un octet, et un etage TEV
-supplementaire interpole `CPREV` vers une couleur konst par `RASA`.
+**Fog.** On the N64 the RSP writes the fog factor **into the vertex alpha**,
+and the blender consumes it in cycle 1 through `G_RM_FOG_SHADE_A`. The port
+does the same: `gSPFogPosition` arrives as `G_MW_FOG` and gives the two
+coefficients (`fogMul = (s16)(w1 >> 16)`, `fogOff = (s16)w1`), each vertex gets
+`alpha = z/w * fogMul + fogOff` clamped to a byte, and an extra TEV stage
+interpolates `CPREV` towards a konst colour by `RASA`.
 
-GX a bien une unite de brouillard, mais sa courbe est la sienne et ne
-reproduirait pas le facteur lineaire du RSP -- d'ou le passage par l'alpha,
-qui est de toute façon ce que fait le materiel d'origine.
+GX does have a fog unit, but its curve is its own and would not reproduce the
+RSP's linear factor — hence going through alpha, which is what the original
+hardware does anyway.
 
-L'etage n'est ajoute que si les trois conditions tiennent : `G_FOG` pose, mode
-deux cycles, et les muxes du cycle 1 valant `P = G_BL_CLR_FOG`,
-`A = G_BL_A_SHADE`. Les mots mesures le confirment : `omL c8112078` a bits
-31..30 = `11` et bits 27..26 = `10`. `apply_render_mode` lit deliberement le
-cycle 2 (c'est lui qui ecrit en memoire) et jetait donc le brouillard en
-entier.
+The stage is only added when all three conditions hold: `G_FOG` set, two-cycle
+mode, and the cycle-1 muxes equal to `P = G_BL_CLR_FOG`, `A = G_BL_A_SHADE`.
+The measured words confirm it: `omL c8112078` has bits 31..30 = `11` and bits
+27..26 = `10`. `apply_render_mode` deliberately reads cycle 2 (that is the one
+that writes to memory) and was therefore throwing fog away entirely.
 
-**`G_SETCIMG` / `G_SETZIMG` : c'etait le vidage du Z, pas une cible hors
-ecran.** Mesure : exactement deux cibles couleur par frame, `81000000` et
-`82000000`, et `zimg 82000000`. Une des deux `G_SETCIMG` pointe donc l'image
-couleur **sur le tampon de profondeur** -- l'idiome N64 ordinaire pour vider le
-Z. Il n'y a aucune cible hors ecran dans ce jeu : rien a rediriger, tout a
-empecher. `drawing_to_color()` ecarte le remplissage quand `CIMG == ZIMG`, les
-deux etats etant remis a zero par liste pour que l'inconnu dessine. Mesure :
-`fills` passe de 3 a 2, avec `1 vers le Z` compte. Sur GX la profondeur est
-videe par la recopie EFB (`gc_gfx_copy_display` force l'etat d'ecriture), donc
-il n'y a rien a faire a la place.
+**`G_SETCIMG` / `G_SETZIMG`: this was the Z clear, not an off-screen target.**
+Measured: exactly two colour targets per frame, `81000000` and `82000000`, and
+`zimg 82000000`. So one of the two `G_SETCIMG`s points the colour image **at
+the depth buffer** — the ordinary N64 idiom for clearing Z. There is no
+off-screen target in this game: nothing to redirect, everything to prevent.
+`drawing_to_color()` discards the fill when `CIMG == ZIMG`, both states being
+reset per list so that the unknown draws. Measured: `fills` goes from 3 to 2,
+with `1 to Z` counted. On GX depth is cleared by the EFB copy
+(`gc_gfx_copy_display` forces the write state), so there is nothing to do in
+its place.
 
-### `obj_animate` et `obj_shade_fast` traduits (2026-09-02)
+### `obj_animate` and `obj_shade_fast` translated (2026-09-02)
 
-Deux des trois talons de `platform/gc/stubs.c`, ecrits en C dans
-`src/hasm/obj_animate.c` et `src/hasm/obj_shade_fast.c` a partir des `.s`. Ce
-ne sont pas des originaux retrouves : le portage n'assemble jamais les `.s`, et
-la seule chose qui doit tenir est le comportement.
+Two of the three stubs in `platform/gc/stubs.c`, written as C in
+`src/hasm/obj_animate.c` and `src/hasm/obj_shade_fast.c` from the `.s` files.
+They are not recovered originals: the port never assembles the `.s`, and the
+only thing that has to hold is the behaviour.
 
-**Le format d'animation**, tel que l'assembleur le decrit. Un bloc d'octets
-plat, decoupe en cles de taille fixe
-`keyStride = 3 * numberOfAnimatedVertices + 12` ; la cle k est a
-`animData + keyStride * (k + 2)`. Les trois octets par sommet sont un **delta
-signe**, pas une position : une pose s'obtient en partant de la pose de repos
-et en ajoutant toutes les cles jusqu'a celle voulue, et passer a une frame
-voisine ne coute qu'une cle d'additions ou de soustractions. Cette somme
-courante vit dans `ModelInstance::vertices[2]` -- un tableau de Vec3s, pas le
-tableau de `Vertex` que son type declare.
+**The animation format**, as the assembly describes it. A flat block of bytes,
+cut into fixed-size keys of `keyStride = 3 * numberOfAnimatedVertices + 12`;
+key k is at `animData + keyStride * (k + 2)`. The three bytes per vertex are a
+**signed delta**, not a position: a pose is obtained by starting from the rest
+pose and adding every key up to the one wanted, and stepping to a neighbouring
+frame costs one key of additions or subtractions. That running sum lives in
+`ModelInstance::vertices[2]` — an array of Vec3s, not the array of `Vertex` its
+type declares.
 
-`obj->animFrame` est en 12.4 : la partie entiere choisit la cle, les quatre
-bits bas interpolent vers la suivante. La partie fractionnaire est construite a
-part dans `D_8011D644` (0xC00 octets alloues au pool, `object_models.c:57`) et
-ajoutee seulement a la copie d'affichage, pour que la somme courante reste
-exacte. Les douze octets d'en-tete d'une cle sont quatre s16 gros-boutiens que
-le RSP ne voit jamais : l'offset x/y/z de l'instance et l'inclinaison de tete,
-interpoles pareil. La sortie double-tamponne entre `vertices[0]` et
-`vertices[1]` via `animationTaskNum`.
+`obj->animFrame` is 12.4: the integer part picks the key, the low four bits
+interpolate towards the next. The fractional part is built separately in
+`D_8011D644` (0xC00 bytes allocated from the pool, `object_models.c:57`) and
+added only to the display copy, so that the running sum stays exact. A key's
+twelve header bytes are four big-endian s16s the RSP never sees: the instance's
+x/y/z offset and the head tilt, interpolated the same way. The output
+double-buffers between `vertices[0]` and `vertices[1]` through
+`animationTaskNum`.
 
-**`obj_shade_fast`** est un ombrage diffuse par sommet, ecrit en gris directement
-dans le tampon de sommets vivant : un produit scalaire de la normale contre une
-direction fixe, mis a l'echelle et biaise par un niveau ambiant
-`shading->unk0 * intensity * 160` tronque, puis `r = g = b` et alpha force
-opaque. Il n'y a pas de lumiere coloree : `ShadeProperties` porte bien
-`lightR/G/B`, mais la fonction ne les lit jamais. La direction utilisee est
-`shadowDirX/Y/Z` -- les noms du decomp disent « shadow », l'assembleur s'en
-sert comme direction d'ombrage. Les lots dont `miscData` vaut `BATCH_VTX_COL`
-portent leurs propres couleurs et sont sautes.
+**`obj_shade_fast`** is a per-vertex diffuse shade, written as grey directly
+into the live vertex buffer: a dot product of the normal against a fixed
+direction, scaled and biased by an ambient level `shading->unk0 * intensity *
+160` truncated, then `r = g = b` and alpha forced opaque. There is no coloured
+light: `ShadeProperties` does carry `lightR/G/B`, but the function never reads
+them. The direction used is `shadowDirX/Y/Z` — the decomp's names say "shadow",
+the assembly uses it as the shading direction. Batches whose `miscData` is
+`BATCH_VTX_COL` carry their own colours and are skipped.
 
-### Le tampon de rebond ARAM partage entre deux threads (2026-09-03)
+### The ARAM bounce buffer shared between two threads (2026-09-03)
 
-**Le defaut structurel de la journee, et il ne vient pas de l'audio.**
+**The structural defect of the day, and it does not come from the audio.**
 
-Toute l'image d'assets vit en ARAM et `osPiStartDma` devient un transfert ARQ
-via `gc_assets_read`. Ce chemin a **deux appelants sur deux threads** :
+The whole asset image lives in ARAM and `osPiStartDma` becomes an ARQ transfer
+through `gc_assets_read`. That path has **two callers on two threads**:
 
-- le thread de jeu (priorite 10) -- pistes, modeles, textures ;
-- le thread **audio** (priorite **12**, donc preemptif) via `__amDMA`
-  (`src/audiomgr.c:465`), une fois par voix ayant besoin d'echantillons,
-  jusqu'a cinquante fois par trame audio.
+- the game thread (priority 10) — tracks, models, textures;
+- the **audio** thread (priority **12**, so it preempts) through `__amDMA`
+  (`src/audiomgr.c:465`), once per voice that needs samples, up to fifty times
+  per audio frame.
 
-Les deux prenaient le chemin lent, a travers **un unique `sBounce` statique, sans
-aucun verrou**. Et le chemin lent n'est pas l'exception qu'il parait : les
-lectures audio utilisent un offset ROM que `__amDMA` n'arrondit qu'a une adresse
-**paire**, jamais a 32 octets. Mesure :
+Both took the slow path, through **a single static `sBounce`, with no lock at
+all**. And the slow path is not the exception it looks like: the audio fetches
+use a ROM offset that `__amDMA` only ever rounds down to an **even** address,
+never to 32 bytes. Measured:
 
     aram reads 6207, slow 5620, contended 20
 
-**90 % des lectures passent par le tampon partage.** Le scenario est direct : le
-thread de jeu DMA un modele dans `sBounce`, le thread audio preempte et
-l'ecrase avec des echantillons, le thread de jeu reprend et recopie **des
-echantillons audio dans son tampon de sommets**. Geometrie corrompue, normales
-corrompues, en-tetes corrompus -- et un plantage le jour ou un mauvais pointeur
-est finalement dereference.
+**90 % of reads go through the shared buffer.** The scenario is direct: the
+game thread DMAs a model into `sBounce`, the audio thread preempts and
+overwrites it with sample data, the game thread resumes and copies **audio
+samples into its vertex buffer**. Corrupt geometry, corrupt normals, corrupt
+headers — and a crash the day a bad pointer is finally dereferenced.
 
-Le commentaire de `aram_dma` **raisonnait deja jusqu'a ce danger exact** pour la
-structure `ARQRequest` et la mettait sur la pile. Le meme raisonnement n'avait
-simplement pas ete reporte sur le tampon. Corrige par un mutex LWP qui rend le
-DMA et la recopie qui le lit indivisibles.
+`aram_dma`'s own comment **already reasoned its way to exactly this hazard** for
+the `ARQRequest` structure and put it on the stack. The same reasoning had
+simply never been carried across to the buffer. Fixed with an LWP mutex that
+makes the DMA and the copy that reads it one indivisible step.
 
-**Ce que la mesure permet et ne permet pas de conclure.** 20 collisions en 90
-secondes, avec un pic de 4 pendant un chargement : c'est une explication solide
-pour une **corruption rare et cumulative, donc pour le plantage**, et pas pour
-un craquement continu. Le compteur sous-estime (il n'attrape la collision que si
-le verrou est tenu a cet instant precis), mais l'ordre de grandeur est des
-dizaines, pas des milliers. Ne pas surinterpreter.
+**What the measurement does and does not let you conclude.** 20 collisions in
+90 seconds, with a peak of 4 during a load: that is a solid explanation for a
+**rare, cumulative corruption, and therefore for the crash**, and not for a
+continuous crackle. The counter undercounts (it only catches a collision if the
+lock is held at that exact instant), but the order of magnitude is tens, not
+thousands. Do not over-read it.
 
-### La cadence audio : le jeu tournait a deux fois la vitesse (2026-09-03)
+### The audio cadence: the game was running at twice the speed (2026-09-03)
 
-**Le mixeur n'y etait pour rien, et mes rustines sur l'anneau non plus.** La
-mesure qui a tout tranche est l'horloge du synthetiseur lui-meme :
+**The mixer had nothing to do with it, and neither did my patches on the ring.**
+The measurement that settled everything is the synthesiser's own clock:
 
-    curSamples/s 44640   (temps reel = 22050)   ratio 2.02
+    curSamples/s 44640   (real time = 22050)   ratio 2.02
 
-`drvr->curSamples` avance de `frameSamples` par trame audio, et le sequenceur
-convertit les durees de notes en echantillons via ce meme `outputRate`. A une
-trame audio par retrace, l'horloge tourne a 44160 ech/s contre un `outputRate`
-de 22050 : **chaque note deux fois trop courte, toute la partition au double de
-la vitesse**, et un surplus de production de 2x qu'il fallait bien jeter quelque
-part -- d'ou les craquements par-dessus.
+`drvr->curSamples` advances by `frameSamples` per audio frame, and the sequencer
+converts note durations into samples through that same `outputRate`. At one
+audio frame per retrace the clock runs at 44160 samples/s against an
+`outputRate` of 22050: **every note twice too short, the whole score at double
+speed**, and a 2x production surplus that had to be thrown away somewhere —
+hence the crackling on top.
 
-Le `* 2` de `fsize = outputRate * 2 / gVideoRefreshRate` dit exactement cela :
-une trame audio vaut **deux** trames video. Le client audio recoit donc un
-retrace sur deux (`ultra/os_sched.c`, route par `OS_SC_ID_AUDIO` ; le client
-video garde les siens, le cadencement du jeu en depend).
+The `* 2` in `fsize = outputRate * 2 / gVideoRefreshRate` says exactly that: one
+audio frame is **two** video frames. So the audio client receives one retrace in
+two (`ultra/os_sched.c`, routed by `OS_SC_ID_AUDIO`; the video client keeps all
+of its own, the game's pacing depends on it).
 
-Verification, trois compteurs independants dans une seule execution :
+Verified with three independent counters in a single run:
 
-| | avant | apres |
+| | before | after |
 |---|---|---|
-| horloge synthe | ratio 2.02 | **0.979** |
-| offres/s | 58-63 | **30** |
+| synth clock | ratio 2.02 | **0.979** |
+| offers/s | 58-63 | **30** |
 | `rejected` / `refused` | 35/s, 29/s | **0 / 0** |
 
-Plus rien n'est jete, donc plus de craquement d'origine « tampon abandonne ».
+Nothing is thrown away any more, so no more "abandoned buffer" crackle.
 
-**Et une lecon de methode sur l'instrument lui-meme.** Le heartbeat bat tous les
-60 VSyncs et j'ai longtemps divise par « une seconde ». Ce n'en est pas une :
+**And a lesson about the instrument itself.** The heartbeat beats every 60
+VSyncs and I divided by "one second" for a long time. It is not one:
 
     clock: 1101 ms since last beat (60 VSyncs)
 
-Sous Dolphin les VSyncs et les retraces VI divergent de 10 %, et **deux mesures
-audio ont ete mal lues a cause de ca**. Le heartbeat imprime desormais les
-millisecondes reelles (base de temps Gekko) ; tout taux tire de ce log doit etre
-mis a l'echelle par `1000/elapsedMs`.
+Under Dolphin, VSyncs and VI retraces diverge by 10 %, and **two audio
+measurements were misread because of it**. The heartbeat now prints the real
+milliseconds (Gekko time base); any rate taken from this log must be scaled by
+`1000/elapsedMs`.
 
-**Dimensionnement de l'anneau, entierement empirique.** Un tampon entier fait
-1568 trames de sortie ; si l'anneau n'a pas cette place d'un coup, la poussee est
-tronquee -- on joue le debut du tampon puis on saute au suivant, ce qui hache la
-forme d'onde. Mesures :
+**Ring sizing, entirely empirical.** One whole buffer is 1568 output frames; if
+the ring does not have that much room at once, the push is truncated — the
+start of the buffer plays and then it jumps to the next one, which chops the
+waveform. Measured:
 
-    2048 :  tronque au tiers    -> 12.5 % de silence, synthe a 0.89 x
-    4096 :  ~995 sur 1568       ->  6.8 % de silence
-    8192 :  jamais tronque      ->  2.4 % de silence, synthe a 0.979 x
+    2048 :  truncated to a third  -> 12.5 % silence, synth at 0.89 x
+    4096 :  ~995 of 1568          ->  6.8 % silence
+    8192 :  never truncated       ->  2.4 % silence, synth at 0.979 x
 
-Les 2.4 % restants sont le deficit d'offre (`frameSamples` colle a son plancher
-de 720 au lieu de 736), pas de la troncature. Cout : ~112 ms de latence.
+The remaining 2.4 % is the supply shortfall (`frameSamples` stuck on its floor
+of 720 instead of 736), not truncation. Cost: ~112 ms of latency.
+### `calc_dynamic_lighting_for_object_2` translated (2026-09-03)
 
-### `calc_dynamic_lighting_for_object_2` traduit (2026-09-03)
+The last of the three stubs, written in `src/hasm/obj_shade_fast.c` under
+`obj_shade_fast`. **`platform/gc/stubs.c` has no stub of that kind left.**
 
-Le dernier des trois talons, ecrit dans `src/hasm/obj_shade_fast.c` sous
-`obj_shade_fast`. **`platform/gc/stubs.c` n'a plus aucun talon de cette
-categorie.**
+It did not have to be read blind, and that is the important part: its sibling
+`calc_dynamic_lighting_for_object_1` is **already decompiled to C** at
+`src/objects.c:7963`, and the two are the branches of a single `if/else` at
+`src/objects.c:7949` — directional lighting on one side (the intro's Diddy,
+Taj, T.T., the bosses), ambient on the other (the racers, the Rare logo,
+Wizpig's head). So every quantity could be checked against a decompiled
+counterpart that computes the same thing from the same structure, and every
+offset the assembly touches was verified in `include/structs.h` rather than
+assumed:
 
-Il n'a pas fallu le lire a l'aveugle, et c'est le point important : son frere
-`calc_dynamic_lighting_for_object_1` est **deja decompile en C** a
-`src/objects.c:7963`, et les deux sont les branches d'un seul `if/else` a
-`src/objects.c:7949` -- eclairage directionnel d'un cote (Diddy de l'intro,
-Taj, T.T., les boss), ambiant de l'autre (les racers, le logo Rare, la tete de
-Wizpig). Chaque grandeur a donc pu etre confrontee a une contrepartie
-decompilee qui calcule la meme chose depuis la meme structure, et chaque offset
-touche par l'assembleur a ete verifie dans `include/structs.h` plutot que
-suppose :
-
-| Offset | Champ | Verifie dans |
+| Offset | Field | Verified in |
 |---|---|---|
 | `ShadeProperties 0x00 / 0x1C-0x20 / 0x28 / 0x2C` | `unk0`, `shadowDirX/Y/Z`, `ambient`, `diffuse` | `structs.h:890` |
 | `Object 0x00 / 0x44 / 0x54` | `trans`, `curVertData`, `shading` | `structs.h:1540` |
 | `ObjectModel 0x28 / 0x38 / 0x40` | `numberOfBatches`, `batches`, `normals` | `structs.h:644` |
-| `TriangleBatchInfo` = 12 o, `0x06` / `0x08` | `miscData`, `flags` | `structs.h:618` |
-| `Vertex` = 10 o, `0x06`-`0x09` | `r`, `g`, `b`, `a` | `structs.h:574` |
-| `0x8000` dans `flags` | `RENDER_ENVMAP` | `textures_sprites.h:61` |
+| `TriangleBatchInfo` = 12 B, `0x06` / `0x08` | `miscData`, `flags` | `structs.h:618` |
+| `Vertex` = 10 B, `0x06`-`0x09` | `r`, `g`, `b`, `a` | `structs.h:574` |
+| `0x8000` in `flags` | `RENDER_ENVMAP` | `textures_sprites.h:61` |
 
-**Ce qu'il fait, et ses trois ecarts avec `_1`.** Meme gris par sommet : un
-produit scalaire de la normale contre une direction, mis a l'echelle par un
-facteur diffus et biaise par un facteur ambiant. Mais :
+**What it does, and its three differences from `_1`.** The same per-vertex
+grey: a dot product of the normal against a direction, scaled by a diffuse
+factor and biased by an ambient one. But:
 
-- `_1` fait tourner la direction dans l'espace objet avec `vec3f_rotate_ypr` ;
-  celui-ci construit la transformee inverse de l'objet comme matrice
-  (`mtxf_from_inverse_transform` sur les trois angles negatifs, position nulle)
-  et multiplie par elle. Meme intention, chemin different -- c'est le chemin de
-  l'assembleur qui est reproduit.
-- `_1` calcule un `shadeStrength` separe pour l'alpha ; celui-ci force l'alpha
-  opaque et ecrit `r = g = b` = le meme gris.
-- `_1` lit `lightDir` **et** `shadowDir` ; celui-ci ne lit jamais que
+- `_1` rotates the direction into object space with `vec3f_rotate_ypr`; this
+  one builds the object's inverse transform as a matrix
+  (`mtxf_from_inverse_transform` on the three negated angles, zero position)
+  and multiplies by it. Same intent, different path — and it is the assembly's
+  path that is reproduced.
+- `_1` computes a separate `shadeStrength` for alpha; this one forces alpha
+  opaque and writes `r = g = b` = the same grey.
+- `_1` reads `lightDir` **and** `shadowDir`; this one only ever reads
   `shadowDir`.
 
-**Deux details numeriques qui ne sont pas interchangeables.** Le decalage de 21
-bits apres `dot * diffuseFactor` est un `srl`, **logique**, pas arithmetique :
-un produit qui deborde dans le bit de signe revient en grand positif puis se
-sature a 255. La multiplication se fait donc en `u32`. Et l'ordre des flottants
-est celui de l'assembleur, pas celui de `_1` : la sous-expression commune
-`(unk0 * intensity * 255)` est formee une fois et chacun de `ambient` et
-`diffuse` la multiplie.
+**Two numeric details that are not interchangeable.** The 21-bit shift after
+`dot * diffuseFactor` is an `srl`, **logical**, not arithmetic: a product that
+overflows into the sign bit comes back as a large positive and then saturates
+at 255. So the multiplication is done in `u32`. And the order of the
+floating-point operations is the assembly's, not `_1`'s: the common
+subexpression `(unk0 * intensity * 255)` is formed once and each of `ambient`
+and `diffuse` multiplies it.
 
-**Deux divergences assumees, verifiees avant d'etre prises.** La boucle sur les
-lots est un `for` ici et un do-while dans l'original -- l'original executerait
-donc son corps une fois meme avec `numberOfBatches == 0` et lirait un lot au
-dela du tableau ; le cas est inatteignable, l'appelant n'entre ici qu'apres
-avoir trouve un lot dont `miscData != BATCH_VTX_COL`. Et l'original laisse
-`ObjectTransform.flags` non initialise sur la pile :
-`mtxf_from_inverse_transform` ne lit que `rotation` et la position
-(`src/hasm/math_util.c:422`), le champ est mort, il est initialise ici plutot
-que laisse indetermine.
+**Two deliberate divergences, checked before being taken.** The loop over
+batches is a `for` here and a do-while in the original — so the original would
+run its body once even with `numberOfBatches == 0` and read a batch past the
+end of the array; the case is unreachable, since the caller only enters here
+after finding a batch whose `miscData != BATCH_VTX_COL`. And the original
+leaves `ObjectTransform.flags` uninitialised on the stack:
+`mtxf_from_inverse_transform` only reads `rotation` and the position
+(`src/hasm/math_util.c:422`), the field is dead, and it is initialised here
+rather than left indeterminate.
 
-**L'instrument, pose avant de regarder l'ecran.** `dynlit2` dans le heartbeat :
+**The instrument, put in place before looking at the screen.** `dynlit2` in the
+heartbeat:
 
     dynlit2: obj 137 (nosh 0), verts 9412, grey 31..255
 
-`obj` = les objets passes par la branche dans la derniere seconde, `nosh` ceux
-repartis faute de `ShadeProperties`, `grey` l'etendue de la valeur ecrite. Les
-trois separent trois pannes differentes : une branche qui ne tourne jamais, une
-qui tourne sans atteindre de sommet, et une qui ecrit un gris colle a 0 ou a
-255. Remis a zero par le heartbeat apres impression, donc chaque ligne vaut une
-seconde.
+`obj` = objects that went through the branch in the last second, `nosh` those
+that left for want of `ShadeProperties`, `grey` the range of the value written.
+The three separate three different failures: a branch that never runs, one that
+runs without reaching a vertex, and one that writes a grey pinned at 0 or 255.
+Reset by the heartbeat after printing, so each line is worth one second.
 
-### `a_interleave` : la moitie de chaque trame audio etait du bruit (2026-09-04)
+### `a_interleave`: half of every audio frame was noise (2026-09-04)
 
-**C'etait LE defaut audio.** Le pic du mixeur restait colle a 32767 depuis deux
-jours, la reverberation avait ete exoneree par mesure, l'envmixer relu ligne a
-ligne contre `ref-sm64gc` — et la cause etait un opcode que personne n'avait
-regarde, parce qu'il ne fait que recopier des echantillons.
+**This was THE audio defect.** The mixer's peak had been pinned at 32767 for
+two days, the reverb had been cleared by measurement, the envmixer re-read line
+by line against `ref-sm64gc` — and the cause was an opcode nobody had looked at,
+because all it does is copy samples.
 
-`aInterleave` entrelace deux tampons mono en un tampon stereo. Son `nbytes` est
-la taille **d'un seul canal**, donc la commande produit `nbytes/2` paires, soit
-deux fois `nbytes` octets de sortie. Le portage ecrivait :
+`aInterleave` interleaves two mono buffers into a stereo one. Its `nbytes` is
+the size of **one channel**, so the command produces `nbytes/2` pairs, that is
+twice `nbytes` bytes of output. The port wrote:
 
 ```c
-int count = ROUND_UP_16(sRspa.nbytes) / sizeof(s16) / 2;   /* faux */
+int count = ROUND_UP_16(sRspa.nbytes) / sizeof(s16) / 2;   /* wrong */
 ```
 
-soit `nbytes/4` iterations d'une paire chacune : **la moitie des paires**. La
-reference (`ref-sm64gc/src/pc/mixer.c`, `aInterleaveImpl`) fait
-`ROUND_UP_16(nbytes) / sizeof(int16_t) / 8` iterations de **huit** paires — le
-meme compte ecrit autrement, `nbytes/2` paires. Le deroulage par huit avait
-masque le facteur.
+which is `nbytes/4` iterations of one pair each: **half the pairs**. The
+reference (`ref-sm64gc/src/pc/mixer.c`, `aInterleaveImpl`) does
+`ROUND_UP_16(nbytes) / sizeof(int16_t) / 8` iterations of **eight** pairs — the
+same count written differently, `nbytes/2` pairs. The unroll by eight had
+hidden the factor.
 
-Consequence exacte, et elle explique tout ce qui avait ete observe. `save.c`
-enchaine :
+The exact consequence, and it explains everything that had been observed.
+`save.c` chains:
 
 ```c
 aSetBuffer (ptr++, 0, 0, 0, outCount<<1);
@@ -685,143 +645,139 @@ aSetBuffer (ptr++, 0, 0, 0, outCount<<2);
 aSaveBuffer(ptr++, f->dramout);
 ```
 
-Le `aSaveBuffer` recopie `outCount<<2` octets depuis DMEM 0 quoi qu'il arrive.
-L'entrelacement n'en remplissait que la premiere moitie ; la seconde moitie,
-c'est la zone `AL_TEMP_1` (offset 320), c'est-a-dire `AL_DECODER_OUT` — la
-sortie du decodeur ADPCM et du reechantillonneur, **avant enveloppe**, donc a
-pleine amplitude. Chaque trame audio etait donc 160 echantillons stereo
-corrects suivis de 160 echantillons de bruit non attenue. A 60 trames par
-seconde. « Inaudible, ca craque dans tous les sens » est la description exacte
-de ce signal.
+The `aSaveBuffer` copies `outCount<<2` bytes from DMEM 0 no matter what. The
+interleave was filling only the first half of that; the second half is the
+`AL_TEMP_1` area (offset 320), which is `AL_DECODER_OUT` — the output of the
+ADPCM decoder and the resampler, **before the envelope**, so at full amplitude.
+Every audio frame was therefore 160 correct stereo samples followed by 160
+samples of unattenuated noise. At 60 frames a second. "Inaudible, it crackles
+in every direction" is the exact description of that signal.
 
-Correction : `count = ROUND_UP_16(nbytes) / sizeof(s16)` paires, une paire par
+The fix: `count = ROUND_UP_16(nbytes) / sizeof(s16)` pairs, one pair per
 iteration.
 
-**Lecon de methode, la meme que celle du 2026-09-03 mais dans l'autre sens.**
-Le compteur `peak` — le plus grand echantillon absolu atteignant la DRAM — a
-correctement designe le probleme, puis a cesse d'etre utile : c'est un maximum
-sur un demi-million d'echantillons par seconde, donc **un seul** echantillon
-ecrete l'epingle a 32767 et se lit exactement comme un mixage qui sature en
-permanence. Apres correction il touchait encore la pleine echelle sur un quart
-des battements, ce qui ressemblait a un defaut restant. Le heartbeat compte
-desormais aussi les echantillons ecretes :
+**A method lesson, the same as 2026-09-03's but in the other direction.** The
+`peak` counter — the largest absolute sample reaching DRAM — correctly named
+the problem, then stopped being useful: it is a maximum over half a million
+samples a second, so **a single** clipped sample pins it at 32767 and reads
+exactly like a mix that saturates permanently. After the fix it still touched
+full scale on a quarter of the beats, which looked like a remaining defect. The
+heartbeat now counts clipped samples as well:
 
     aud 1397 cmds, 127 saves, peak 32768, clipped 19/18000
 
-19 sur 18 000, c'est un jeu fort, pas une distorsion. **Un maximum ne dit rien
-sur une distribution ; ajouter le compte a cote du maximum a coute trois
-lignes.**
+19 out of 18 000 is a loud game, not distortion. **A maximum says nothing about
+a distribution; adding the count next to the maximum cost three lines.**
 
-### `A_POLEF` implemente, reverberation rallumee (2026-09-04)
+### `A_POLEF` implemented, reverb turned back on (2026-09-04)
 
-Le quinzieme opcode de l'ABI, et le seul que `ref-sm64gc` n'implemente pas : il
-a fallu le reconstruire. L'appelant le contraint entierement, et c'est ce qui
-rend la reconstruction sure plutot que devinatoire. `_filterBuffer`
-(`libultra/src/audio/mips1/reverb.c:429`) emet exactement trois commandes :
+The fifteenth opcode of the ABI, and the only one `ref-sm64gc` does not
+implement: it had to be reconstructed. The caller constrains it completely, and
+that is what makes the reconstruction safe rather than speculative.
+`_filterBuffer` (`libultra/src/audio/mips1/reverb.c:429`) emits exactly three
+commands:
 
 ```c
-aSetBuffer (ptr++, 0, buff, buff, count<<1);      /* en place */
-aLoadADPCM (ptr++, 32, lp->fcvec.fccoef);         /* 16 coefficients s16 */
+aSetBuffer (ptr++, 0, buff, buff, count<<1);      /* in place */
+aLoadADPCM (ptr++, 32, lp->fcvec.fccoef);         /* 16 s16 coefficients */
 aPoleFilter(ptr++, lp->first, lp->fgain, lp->fstate);
 ```
 
-et `_init_lpfilter` (`drvrnew.c`) remplit ces seize coefficients :
+and `_init_lpfilter` (`drvrnew.c`) fills those sixteen coefficients:
 
     fc           = (lp->fc * 16384) >> 15
     lp->fgain    = 16384 - fc
     fccoef[0..7] = 0
     fccoef[8+k]  = 16384 * (fc/16384)^(k+1)
 
-Trois consequences, et ensemble elles ne laissent aucune liberte :
+Three consequences, and together they leave no freedom at all:
 
-1. Charger les coefficients par `aLoadADPCM` les range dans le book ADPCM, que
-   le decodeur lit comme `book[0][0..7]` (predicteur a deux echantillons) et
-   `book[1][0..7]` (a un echantillon). Ici la premiere moitie est nulle : le
-   second pole est eteint, la reverberation demande en fait **un filtre a un
-   pole**. Les huit puissances de la seconde moitie sont la vectorisation RSP
-   (huit sorties par pas) ; un CPU scalaire n'a besoin que de la premiere.
-2. La base en virgule fixe est 16384 (`SCALE` dans `drvrnew.c`), pas les 2048
-   du decodeur.
-3. `fgain + fc == 16384` exactement, donc gain unite en continu. C'est la
-   propriete qui rend le filtre sur dans la boucle de retard, et c'est la
-   verification que le decalage est le bon : tout autre decalage ferait mourir
-   ou diverger la reverberation.
+1. Loading the coefficients through `aLoadADPCM` puts them in the ADPCM book,
+   which the decoder reads as `book[0][0..7]` (two-sample predictor) and
+   `book[1][0..7]` (one-sample). Here the first half is zero: the second pole is
+   off, and the reverb is actually asking for a **one-pole filter**. The eight
+   powers in the second half are the RSP's vectorisation (eight outputs per
+   step); a scalar CPU only needs the first.
+2. The fixed-point base is 16384 (`SCALE` in `drvrnew.c`), not the decoder's
+   2048.
+3. `fgain + fc == 16384` exactly, so unity gain at DC. That is the property
+   that makes the filter safe inside the delay loop, and it is the check that
+   the shift is the right one: any other shift would make the reverb die or
+   diverge.
 
-Donc, par echantillon :
+So, per sample:
 `y = (fcoef[0] * y[-2] + fcoef[8] * y[-1] + gain * x) >> 14`.
 
-Le terme a deux echantillons est conserve bien que ce jeu y charge toujours
-zero : il coute une multiplication et c'est lui qui fait de ce code un filtre a
-**poles** plutot qu'un cas particulier qui marche par accident.
+The two-sample term is kept even though this game always loads zero into it: it
+costs one multiply, and it is what makes this code a **pole** filter rather than
+a special case that works by accident.
 
-`GC_AUDIO_FX` repasse donc a 1 par defaut. Le knob reste, comme A/B en une
-compilation : « la reverberation est-elle responsable de ce que j'entends »,
-question que ce portage a deja du poser deux fois.
+`GC_AUDIO_FX` therefore goes back to 1 by default. The knob stays, as the
+one-build A/B for "is the reverb responsible for what I am hearing" — a question
+this port has already had to ask twice.
 
-### `G_PERSPNORMALIZE` et `G_SETBLENDCOLOR` : `ignored:` est vide (2026-09-04)
+### `G_PERSPNORMALIZE` and `G_SETBLENDCOLOR`: `ignored:` is empty (2026-09-04)
 
-Les deux derniers opcodes que le walker jetait, `b4` et `f9`. `G_IMMFIRST`
-valant -65 (0xBF), `b4` est `G_PERSPNORMALIZE` et non un `G_RDPHALF`.
+The last two opcodes the walker was dropping, `b4` and `f9`. With `G_IMMFIRST`
+at -65 (0xBF), `b4` is `G_PERSPNORMALIZE` and not a `G_RDPHALF`.
 
-- **`G_PERSPNORMALIZE`** donne au RSP un facteur 16 bits par lequel multiplier
-  w avant la division perspective, uniquement pour garder la division dans la
-  plage 16 bits ; `guPerspectiveF` le calcule en parametre de sortie a cote de
-  la matrice (`src/camera.c:155`) et il ne fait pas partie de la projection. Le
-  GP fait ici la division en virgule flottante, a partir de la matrice seule :
-  il n'y a rien a mettre a l'echelle et rien a perdre. C'est donc un veritable
-  no-op — ecrit comme un `case` et non laisse au `default`, pour que le
-  recensement `ignored:` continue de vouloir dire « non traite ».
-- **`G_SETBLENDCOLOR`** sert au RDP a deux endroits : l'entree `CLR_BL` du
-  blender, et la reference du test alpha sous `G_AC_THRESHOLD`. DKR l'emet une
-  seule fois par trame rendue — `gDPSetBlendColor(0, 0, 0, 100)` a
-  `src/tracks.c:351` — et ne selectionne jamais `CLR_BL` dans un mux, donc la
-  reference alpha est tout son effet. `apply_render_mode` honore desormais
-  `G_AC_THRESHOLD` avec cette valeur au lieu de la confondre avec le 128 fixe
-  de `CVG_X_ALPHA`.
+- **`G_PERSPNORMALIZE`** gives the RSP a 16-bit factor to multiply w by before
+  the perspective divide, purely to keep the divide inside the 16-bit range;
+  `guPerspectiveF` computes it as an output parameter alongside the matrix
+  (`src/camera.c:155`) and it is not part of the projection. Here the GP does
+  the divide in floating point, from the matrix alone: there is nothing to
+  scale and nothing to lose. So it is a genuine no-op — written as a `case`
+  rather than left to the `default`, so that the `ignored:` census keeps
+  meaning "not handled".
+- **`G_SETBLENDCOLOR`** serves the RDP in two places: the blender's `CLR_BL`
+  input, and the alpha test's reference under `G_AC_THRESHOLD`. DKR emits it
+  once per rendered frame — `gDPSetBlendColor(0, 0, 0, 100)` at
+  `src/tracks.c:351` — and never selects `CLR_BL` in a mux, so the alpha
+  reference is its whole effect. `apply_render_mode` now honours
+  `G_AC_THRESHOLD` with that value instead of confusing it with the fixed 128
+  of `CVG_X_ALPHA`.
 
-Le heartbeat affiche maintenant `ignored:` vide et `aud-ign:` vide : **le
-portage traite la totalite des opcodes que le jeu emet, graphiques et audio.**
+The heartbeat now shows `ignored:` empty and `aud-ign:` empty: **the port
+handles every opcode the game emits, graphics and audio.**
+### The log on the SD card (2026-09-04)
 
-### Le journal sur carte SD (2026-09-04)
+`platform/gc/gc_logfile.c`. Everything `gc_log` and `gc_fatal` print also goes
+to `sd:/dkr/dkr.log` (or `carda:/`, `cardb:/`).
 
-`platform/gc/gc_logfile.c`. Tout ce que `gc_log` et `gc_fatal` impriment part
-aussi dans `sd:/dkr/dkr.log` (ou `carda:/`, `cardb:/`).
+The reason is simple and it was blocking: **there is no USB Gecko console on
+real hardware.** All of the port's instrumentation — dropped opcodes, audio
+peak, the game thread's blocking address, the stack sentinel — became invisible
+exactly where the remaining defects have to be found.
 
-La raison est simple et elle etait bloquante : **la console USB Gecko n'existe
-pas sur du materiel reel.** Toute l'instrumentation du portage — opcodes jetes,
-pic audio, adresse de blocage du thread de jeu, sentinelle de pile — devenait
-invisible exactement la ou les defauts restants doivent etre trouves.
+Three properties, and how each is obtained:
 
-Trois proprietes, et comment chacune est obtenue :
+1. **Survive the power switch.** Nobody quits a GameCube game; you turn the
+   console off. A `FILE*` held open would lose libfat's cache and would never
+   have updated the directory entry. So a flush is a full open/append/close
+   cycle: when it returns, what has been logged is on the card, size included.
+2. **Do not block the game.** The text goes into a 16 KB buffer, drained at the
+   end of every beat (the boot thread has 59 VSyncs of nothing to do after
+   that), when it approaches full, and immediately on a `gc_fatal`. Nothing in
+   rendering or audio waits for the card.
+3. **Be callable from any thread.** An LWP mutex, with a lock-free exit for the
+   crash handler — which cannot afford to block on a mutex the faulting thread
+   may be holding.
 
-1. **Survivre a l'interrupteur.** Personne ne quitte un jeu GameCube, on eteint
-   la console. Un `FILE*` garde ouvert perdrait le cache de libfat et n'aurait
-   jamais mis a jour l'entree de repertoire. Une vidange est donc un cycle
-   complet ouvrir/ajouter/fermer : au retour, ce qui a ete journalise est sur
-   la carte, taille comprise.
-2. **Ne pas bloquer le jeu.** Le texte va dans un tampon de 16 Ko, vide a la
-   fin de chaque battement (le thread de boot a 59 VSync de rien a faire
-   ensuite), quand il approche du plein, et immediatement sur un `gc_fatal`.
-   Rien dans le rendu ou l'audio n'attend la carte.
-3. **Etre appelable depuis n'importe quel thread.** Mutex LWP, avec une sortie
-   sans verrou pour le gestionnaire de plantage — qui ne peut pas se permettre
-   de bloquer sur un mutex que le thread fautif detient peut-etre.
+With no card mounted, everything degrades to a compare and a return: that is
+the Dolphin case, where the Gecko remained the better channel.
 
-Sans carte montee, tout degrade a un compare et un retour : c'est le cas
-Dolphin, ou le Gecko reste le meilleur canal.
+**A side effect fixed on the way:** `fatInitDefault` was only called from
+`gc_assets_open`, so a build with embedded assets — the one that runs under
+Dolphin, and the one `dist` produces — **mounted no filesystem at all**. The
+save file had nowhere to go. Mounting is now its own operation
+(`gc_fat_mount`, cached), performed by `gc_main` before anything that might
+want a card.
 
-**Effet de bord corrige au passage :** `fatInitDefault` n'etait appele que
-depuis `gc_assets_open`, donc une compilation avec assets embarques — celle qui
-tourne sous Dolphin, et celle que produit `dist` — **ne montait aucun systeme
-de fichiers**. Le fichier de sauvegarde n'avait nulle part ou aller. Le montage
-est desormais une operation a part (`gc_fat_mount`, mise en cache), faite par
-`gc_main` avant tout ce qui pourrait vouloir une carte.
+The knob: `GC_SDLOG ?= 1`.
 
-Le knob : `GC_SDLOG ?= 1`.
+### First run on real hardware: what the log said (2026-09-04)
 
-### Premier run sur materiel reel : ce que le journal a dit (2026-09-04)
-
-Le journal a fonctionne. Il contenait ceci, en entier :
+The log worked. Here it is in full:
 
 ```
 === DKR-GC ===
@@ -835,93 +791,89 @@ boot: assets ok
 boot: game running
 ```
 
-Neuf lignes, et trois faits utiles.
+Nine lines, and three useful facts.
 
-**1. Le canal de diagnostic marche.** `cardb:` : le lecteur SD est en slot B.
-La console a bien ecrit sur la carte, avec un horodatage FAT fantaisiste
-(« Sep 21 2084 ») parce que la GameCube n'a pas d'horloge que libfat sache
-lire.
+**1. The diagnostic channel works.** `cardb:` — the SD reader is in slot B. The
+console did write to the card, with a fanciful FAT timestamp ("Sep 21 2084")
+because the GameCube has no clock libfat can read.
 
-**2. `640x576` : la console est PAL.** 50 retraces par seconde, pas 60. Le
-heartbeat bat tous les 60 VSync, donc **1,2 s** la-bas contre 1,0 s sous
-Dolphin. Encore un denominateur different — voir le piege de methode du
-2026-09-03, qui portait deja sur ce compteur.
+**2. `640x576`: the console is PAL.** 50 retraces a second, not 60. The
+heartbeat beats every 60 VSyncs, so **1.2 s** there against 1.0 s under
+Dolphin. Another different denominator — see the method trap of 2026-09-03,
+which was already about this counter.
 
-**3. Le crash arrive avant le premier battement.** Aucune ligne apres
-`game running`, et le .dol de la carte est bien la compilation `GC_DEBUG=1`
-(md5 verifie, chaines du heartbeat presentes dans le binaire). Donc moins de
-1,2 s de jeu.
+**3. The crash happens before the first beat.** No line after `game running`,
+and the .dol on the card really is the `GC_DEBUG=1` build (md5 checked,
+heartbeat strings present in the binary). So under 1.2 s of gameplay.
 
-**Et surtout : le rapport de plantage n'est pas arrive.** Pas de bloc `CRASH`
-dans le journal, pas de `dkr.crash` a cote. L'utilisateur voyait bien le vidage
-ecran de libogc, donc `__wrap_c_default_exceptionhandler` s'etait execute et
-avait rendu la main — mais rien n'avait ete ecrit.
+**And above all: the crash report never arrived.** No `CRASH` block in the log,
+no `dkr.crash` next to it. The user could see libogc's on-screen dump, so
+`__wrap_c_default_exceptionhandler` had run and handed on — but nothing had been
+written.
 
-#### La cause : `MSR[EE]` est a zero dans le handler
+#### The cause: `MSR[EE]` is zero inside the handler
 
-Une exception PowerPC efface `MSR[EE]`, et le vecteur de libogc ne le remet
-pas. Il n'en a pas besoin : tout ce que fait `c_default_exceptionhandler` est
-en scrutation — `kprintf` vers une console framebuffer, `SI_Sync`, `PAD_Sync`,
-`udelay`, puis une boucle qui interroge la manette. Verifie au desassemblage.
+A PowerPC exception clears `MSR[EE]`, and libogc's vector does not put it back.
+It does not need to: everything `c_default_exceptionhandler` does is polled —
+`kprintf` to a framebuffer console, `SI_Sync`, `PAD_Sync`, `udelay`, then a loop
+that queries the controller. Verified by disassembly.
 
-Ecrire un fichier ne l'est pas. libfat prend un mutex LWP par partition,
-`fopen` de newlib alloue sous un autre, et les transferts EXI de la carte SD
-se terminent sur une interruption. Les trois echouent ou ne se terminent
-jamais avec `EE` a zero. `fopen` renvoyait NULL, `flush_locked` mettait
-`sReady = FALSE` et rendait la main : exactement le journal observe.
+Writing a file is not. libfat takes an LWP mutex per partition, newlib's `fopen`
+allocates under another, and the SD card's EXI transfers complete on an
+interrupt. All three fail or never complete with `EE` at zero. `fopen` returned
+NULL, `flush_locked` set `sReady = FALSE` and handed back: exactly the log that
+was observed.
 
-#### Trois corrections, parce qu'il n'y a pas de run de rechange
+#### Three fixes, because there is no spare run
 
-1. **`_CPU_ISR_Enable()` avant toute E/S**, et `mtmsr` pour rendre a libogc
-   l'etat que son vecteur avait laisse. Le risque assume : avec les
-   interruptions rendues, l'ordonnanceur peut faire tourner d'autres threads
-   pendant que celui-ci est dans le handler, sur une machine deja fautee. Ca
-   vaut mieux que zero information, et les threads qui continuent (boot, audio)
-   sont justement ceux dont on veut la sortie.
+1. **`_CPU_ISR_Enable()` before any I/O**, and an `mtmsr` to give libogc back
+   the state its vector had left. The accepted risk: with interrupts back on,
+   the scheduler can run other threads while this one is inside the handler, on
+   a machine that has already faulted. That beats zero information, and the
+   threads that keep going (boot, audio) are precisely the ones whose output we
+   want.
 
-2. **Le mode plantage du journal.** Le handler ecrit deux cents lignes par
-   `gc_logfile_printf`, chacune prenant le mutex du journal. Si le thread
-   fautif etait lui-meme dans un `gc_log` — le thread de boot en train
-   d'imprimer un battement, cas evident — le mutex est detenu par un thread qui
-   ne le rendra jamais, et le handler se bloque des la premiere ligne. Gel
-   complet, aucun rapport : strictement pire que le journal vide qu'on
-   corrigeait. `gc_logfile_set_crash_mode()` arrete de prendre le verrou ; il
-   ne reste qu'un ecrivain, donc le verrou ne protege plus rien.
+2. **The log's crash mode.** The handler writes two hundred lines through
+   `gc_logfile_printf`, each taking the log's mutex. If the faulting thread was
+   itself inside a `gc_log` — the boot thread printing a beat, an obvious case —
+   the mutex is held by a thread that will never return it, and the handler
+   blocks on the first line. Complete freeze, no report at all: strictly worse
+   than the empty log we were fixing. `gc_logfile_set_crash_mode()` stops taking
+   the lock; there is only one writer left, so the lock protects nothing any
+   more.
 
-3. **Une seconde tentative depuis le thread de boot.** Le handler pose
-   `sCrashPending`, tente l'ecriture, et n'efface le drapeau que si elle a
-   vraiment atteint la carte. `gc_crash_poll()`, appele a chaque retrace depuis
-   `gc_main`, l'ecrit sinon — dans un contexte de thread parfaitement ordinaire.
-   Le handler attend jusqu'a deux secondes que ca arrive avant de laisser
-   libogc prendre l'ecran. Deux tentatives independantes, et celle qui tourne
-   en contexte normal est la plus susceptible d'aboutir.
+3. **A second attempt from the boot thread.** The handler sets `sCrashPending`,
+   tries the write, and only clears the flag if it genuinely reached the card.
+   `gc_crash_poll()`, called at every retrace from `gc_main`, writes it
+   otherwise — in a perfectly ordinary thread context. The handler waits up to
+   two seconds for that to happen before letting libogc take the screen. Two
+   independent attempts, and the one running in a normal context is the more
+   likely to succeed.
 
-#### Et ce qui manquait pour lire un crash d'une seconde
+#### And what was missing to read a one-second crash
 
-- **Battements precoces** aux retraces 5, 15 et 30, puis la cadence habituelle.
-  Trois ecritures carte de plus par demarrage, et un crash dans la premiere
-  seconde laisse desormais le recensement d'opcodes, les compteurs de taches et
-  l'etat audio derriere lui.
-- **`gc_logfile_mark()`** : une ligne ecrite *et* vidangee immediatement, pour
-  les evenements uniques qui doivent survivre a un crash une milliseconde plus
-  tard. Posee sur les deux chemins que cette compilation a allumes et qui
-  n'avaient jamais tourne :
-  - `pfs: first osPfsIsPlug -> pack present` — repondre « oui » est ce qui fait
-    entrer le jeu dans le code Controller Pak **et** rumble de `save_data.c`,
-    dont rien n'avait jamais ete execute dans ce portage ;
-  - `aud: first A_POLEF, reverb is running` — la reverberation etait refusee
-    jusqu'a ce jour.
-- **`GC_MEMCARD ?= 1`**, l'A/B en une compilation : `0` remet le jeu ou il
-  etait, sans pak, donc hors de tout ce code.
+- **Early beats** at retraces 5, 15 and 30, then the usual cadence. Three extra
+  card writes per boot, and a crash in the first second now leaves the opcode
+  census, the task counters and the audio state behind it.
+- **`gc_logfile_mark()`**: a line written *and* flushed immediately, for
+  one-shot events that have to survive a crash a millisecond later. Placed on
+  the two paths this build turned on which had never run:
+  - `pfs: first osPfsIsPlug -> pack present` — answering "yes" is what takes the
+    game into `save_data.c`'s Controller Pak **and** rumble code, none of which
+    had ever executed in this port;
+  - `aud: first A_POLEF, reverb is running` — the reverb had been refused until
+    that day.
+- **`GC_MEMCARD ?= 1`**, the one-build A/B: `0` puts the game back where it was,
+  with no pak, and therefore out of all that code.
 
-**Bogue trouve en chemin :** `osMotorInit` ne renseignait pas `pfs->channel`,
-alors que `osMotorStart`/`osMotorStop` adressent la manette par ce champ. Sans
-consequence tant qu'`osPfsIsPlug` repondait « pas de pak » — la boucle rumble de
-`save_data.c` ne tournait jamais. Elle tourne maintenant.
+**A bug found on the way:** `osMotorInit` was not filling in `pfs->channel`,
+while `osMotorStart`/`osMotorStop` address the controller through that field.
+Harmless as long as `osPfsIsPlug` answered "no pak" — `save_data.c`'s rumble
+loop never ran. It runs now.
 
-### Deuxieme run materiel : la console Gecko ecrivait dans la carte SD (2026-09-04)
+### Second hardware run: the Gecko console was writing into the SD card (2026-09-04)
 
-Les balises ont fait leur travail. Le journal du second run :
+The markers did their job. The second run's log:
 
 ```
 === DKR-GC ===
@@ -937,71 +889,67 @@ pfs: first osPfsIsPlug -> pack present
 pfs: osPfsInit ch0 ok, 0/123 pages used
 ```
 
-Deux lignes de plus, et elles disent : le jeu est bien entre dans le code
-Controller Pak, `osPfsInit` a reussi, puis plus rien — ni le battement du tick 5
-(100 ms), ni le bloc `CRASH`, **toujours pas de `dkr.crash`**.
+Two more lines, and they say: the game did enter the Controller Pak code,
+`osPfsInit` succeeded, and then nothing — not the tick-5 beat (100 ms), not the
+`CRASH` block, **still no `dkr.crash`**.
 
-Le rapport de plantage n'arrivait toujours pas, malgre `MSR[EE]` remis. Ce
-n'etait donc pas (seulement) les interruptions.
+The crash report still was not arriving, despite `MSR[EE]` being restored. So it
+was not (only) interrupts.
 
-#### La cause : `CON_EnableGecko(EXI_CHANNEL_1, FALSE)`
+#### The cause: `CON_EnableGecko(EXI_CHANNEL_1, FALSE)`
 
-Presente depuis le premier jour du portage, une seule ligne, jamais suspectee
-parce qu'elle est *la raison pour laquelle on peut deboguer sous Dolphin*.
+Present since the port's first day, one line, never suspected because it is
+*the reason debugging under Dolphin is possible at all*.
 
-**EXI canal 1, c'est le slot carte memoire B. Le lecteur SD de l'utilisateur est
-un SD Gecko, en slot B** — le journal le dit lui-meme : `log cardb:`. Un USB
-Gecko et un SD Gecko sont tous deux le peripherique EXI 0 de leur canal. Donc
-**chaque `printf` selectionne l'adaptateur SD et lui envoie des octets de
-protocole USB Gecko.** Avec `safe` a `FALSE`, libogc ne verifie meme pas qu'un
-Gecko est present : il ecrit.
+**EXI channel 1 is memory card slot B. The user's SD reader is an SD Gecko, in
+slot B** — the log says so itself: `log cardb:`. A USB Gecko and an SD Gecko are
+both EXI device 0 of their channel. So **every `printf` selected the SD adapter
+and sent it USB Gecko protocol bytes.** With `safe` at `FALSE`, libogc does not
+even check that a Gecko is present: it writes.
 
-Sous Dolphin c'est inoffensif, et c'est ainsi qu'a ete fait tout le diagnostic
-depuis le debut — le slot B de Dolphin *est* vraiment un Gecko. Sur materiel, ca
-met du trafic parasite sur le bus dont le jeu demarre. Ca n'a rien casse tant
-que le portage ne lisait la carte qu'au boot. **Le jour ou le journal et la
-sauvegarde ont commence a s'en servir pendant que le jeu tourne, ca a cesse
-d'etre theorique** : les deux runs materiel se sont termines sur une carte qui
-ne pouvait plus etre ecrite, ce qui est exactement pourquoi le rapport de
-plantage n'arrivait jamais.
+Under Dolphin that is harmless, and it is how every diagnosis had been done
+from the start — Dolphin's slot B really *is* a Gecko. On hardware it puts
+parasitic traffic on the bus the game boots from. It broke nothing while the
+port only read the card at boot. **The day the log and the save started using it
+while the game runs, it stopped being theoretical**: both hardware runs ended on
+a card that could no longer be written, which is exactly why the crash report
+never arrived.
 
-Correction : monter libfat **avant** d'activer le Gecko, ne jamais l'activer sur
-un slot que libfat detient, et passer `safe` a `TRUE` pour que libogc verifie la
-presence d'un Gecko avant d'ecrire. Le boot trace affiche desormais
-`fat slots 0x2 ..., gecko off (slot B is libfat)` sur cette console, et
-`fat slots 0x0 ..., gecko on` sous Dolphin.
+The fix: mount libfat **before** enabling the Gecko, never enable it on a slot
+libfat holds, and pass `safe` as `TRUE` so libogc checks a Gecko is there before
+writing. The boot trace now prints `fat slots 0x2 ..., gecko off (slot B is
+libfat)` on this console.
 
-#### Trois autres corrections de la meme famille
+#### Three other fixes of the same family
 
-Le meme run a rendu visible que **trois threads touchent maintenant une carte**
-la ou un seul le faisait : le thread de boot vidange le journal, le thread de
-jeu lit et ecrit la sauvegarde par `gc_storage.c`, et le thread de jeu depose
-aussi des balises. libfat et `CARD_*` pilotent les memes canaux EXI.
+The same run made it visible that **three threads now touch a card** where one
+used to: the boot thread flushes the log, the game thread reads and writes the
+save through `gc_storage.c`, and the game thread also drops markers. libfat and
+`CARD_*` drive the same EXI channels.
 
-1. **`gc_fs_lock()` / `gc_fs_unlock()`** (`gc_assets.c`) : un seul verrou autour
-   de tout acces carte, libfat comme `CARD_*`. Grossier a dessein — un acces
-   carte se compte en millisecondes et arrive aux points de sauvegarde et une
-   fois par seconde, jamais par image.
+1. **`gc_fs_lock()` / `gc_fs_unlock()`** (`gc_assets.c`): one lock around every
+   card access, libfat and `CARD_*` alike. Coarse on purpose — a card access is
+   milliseconds and happens at save points and once a second, never per frame.
 
-2. **Plus aucune E/S depuis un thread autre que celui de boot.** Le journal ne
-   vidangeait plus seulement au battement : `gc_logfile_write` vidangeait des
-   que le tampon atteignait les trois quarts, et `gc_logfile_mark` vidangeait
-   toujours — depuis le thread appelant. Desormais tout ecrit dans le tampon, et
-   `gc_main` vidange **a chaque retrace** (gratuit quand le tampon est vide, une
-   fois par seconde en pratique). Une balise atteint donc la carte en 20 ms sans
-   que le thread de jeu n'ouvre jamais de fichier.
+2. **No more I/O from any thread but the boot thread.** The log was not only
+   flushing on the beat: `gc_logfile_write` flushed as soon as the buffer
+   reached three quarters, and `gc_logfile_mark` always flushed — from the
+   calling thread. Now everything writes into the buffer, and `gc_main` flushes
+   **at every retrace** (free when the buffer is empty, once a second in
+   practice). A marker therefore reaches the card in 20 ms without the game
+   thread ever opening a file.
 
-3. **`gc_storage` ne touche plus un slot que libfat detient.** `gc_fat_mount()`
-   note les volumes montes (`carda:` = slot A, `cardb:` = slot B) et
-   `card_slot_has_card` refuse ces canaux avant meme de sonder. Sonder le slot B
-   avec `CARD_*` revient a donner au pilote de carte memoire le canal EXI que le
-   pilote SD est en train d'utiliser.
+3. **`gc_storage` no longer touches a slot libfat holds.** `gc_fat_mount()`
+   records the mounted volumes (`carda:` = slot A, `cardb:` = slot B) and
+   `card_slot_has_card` refuses those channels before it even probes. Probing
+   slot B with `CARD_*` means handing the memory card driver the EXI channel the
+   SD driver is using.
 
-#### Et de quoi trancher au prochain run
+#### And enough to settle it on the next run
 
-Toutes les entrees `osPfs*` posent desormais une balise a leur premier appel, et
-le scheduler en pose une sur la premiere tache graphique et la premiere tache
-audio. Sous Dolphin la sequence est :
+Every `osPfs*` entry point now drops a marker on its first call, and the
+scheduler drops one on the first graphics task and the first audio task. The
+sequence is:
 
 ```
 pfs: osPfsIsPlug -> pack present
@@ -1013,16 +961,14 @@ pfs: osPfsNumFiles
 pfs: osPfsFileState no0
 ```
 
-**Lecon de methode : une balise qui n'existe que sur materiel ne peut pas etre
-testee avant d'en avoir besoin.** `gc_logfile_mark` n'ecrivait au depart que
-dans le fichier, donc invisible sous Dolphin, donc invérifiable — sur des
-balises ajoutees precisement parce qu'un run materiel avait du etre depense pour
-apprendre ce qu'un run Dolphin aurait pu dire. Elles passent maintenant aussi
-par la console.
+**Method lesson: a marker that only exists on hardware cannot be tested before
+it is needed.** `gc_logfile_mark` initially wrote only to the file, so it was
+invisible under Dolphin and therefore unverifiable — on markers added precisely
+because a hardware run had had to be spent learning what an emulator run could
+have said. They go through the console as well now.
+### Third hardware run: neither the Gecko alone nor the Controller Pak (2026-09-04)
 
-### Troisieme run materiel : ni le Gecko seul, ni le Controller Pak (2026-09-04)
-
-Les deux .dol plantent. Journal du dernier (`dkr-nopak.dol`, `GC_MEMCARD=0`) :
+Both .dols crash. The log of the last one (`dkr-nopak.dol`, `GC_MEMCARD=0`):
 
 ```
 built Sep  4 2026 10:22:37
@@ -1033,35 +979,34 @@ boot: video ok (640x576)
 boot: game running
 ```
 
-Deux enseignements, et une erreur a moi.
+Two lessons, and a mistake of mine.
 
-**1. `gecko off` et ca plante quand meme.** La console Gecko ecrivant dans le SD
-Gecko etait un vrai bogue et reste corrigee, mais ce n'etait pas la cause.
+**1. `gecko off` and it still crashes.** The Gecko console writing into the SD
+Gecko was a real bug and stays fixed, but it was not the cause.
 
-**2. La version sans Controller Pak plante aussi.** Ce n'est donc pas le code
-pak de `save_data.c` non plus.
+**2. The build with no Controller Pak crashes too.** So it is not
+`save_data.c`'s pak code either.
 
-**3. Erreur : j'avais perdu l'instrumentation.** Le run precedent avait produit
-deux lignes `pfs:` ; celui-ci n'en a aucune, alors que la version sans pak en
-emet une (`no pack`). La difference n'est pas dans le jeu, elle est dans le
-portage : j'avais retire la vidange de `gc_logfile_mark` pour deplacer toute
-l'E/S sur le thread de boot. Le raisonnement etait bon — trois threads touchaient
-la carte — mais **si le thread de jeu se bloque a une priorite superieure, ou si
-la machine s'arrete interruptions coupees, le thread de boot ne tourne plus et
-tout ce qui reste dans le tampon est perdu.** `gc_fs_lock` etait la bonne
-reponse, pas le tamponnage. La vidange immediate est revenue.
+**3. My mistake: I had lost the instrumentation.** The previous run produced two
+`pfs:` lines; this one has none, even though the no-pak build emits one (`no
+pack`). The difference is not in the game, it is in the port: I had removed
+`gc_logfile_mark`'s flush in order to move all I/O onto the boot thread. The
+reasoning was sound — three threads were touching the card — but **if the game
+thread blocks at a higher priority, or if the machine stops with interrupts off,
+the boot thread stops running and everything still in the buffer is lost.**
+`gc_fs_lock` was the right answer, not buffering. The immediate flush is back.
 
-**Consequence de methode : une correction qui deplace ou l'instrument ecrit est
-un changement de l'instrument.** Elle merite le meme scepticisme qu'une
-correction du code mesure — et ici elle a coute un run materiel entier.
+**Method consequence: a fix that moves *where* the instrument writes is a change
+to the instrument.** It deserves the same scepticism as a change to the code
+being measured — and here it cost a whole hardware run.
 
-#### Ce que la compilation suivante ajoute
+#### What the next build adds
 
-- **`gc_logfile_mark` vidange de nouveau depuis le thread appelant**, sous
+- **`gc_logfile_mark` flushes from the calling thread again**, under
   `gc_fs_lock`.
-- **Une echelle de balises sur le chemin d'init du jeu**, tiree de `init_game`
-  (`src/thread3_main.c:182`) et posee sur les points d'entree que le portage
-  possede. Ordre observe sous Dolphin :
+- **A ladder of markers along the game's init path**, taken from `init_game`
+  (`src/thread3_main.c:182`) and placed on the entry points the port owns.
+  Order:
 
 ```
 init: osCreateScheduler
@@ -1076,21 +1021,19 @@ init: osEepromProbe done
 sched: first graphics task
 ```
 
-  `osEepromProbe` est marque **des deux cotes** de `save_load`, parce que ce qui
-  se passe entre les deux est le code le plus recent du chemin de boot : la
-  sauvegarde passe desormais par `gc_storage.c`, qui atteint une carte memoire
-  et un systeme de fichiers.
+  `osEepromProbe` is marked on **both sides** of `save_load`, because what
+  happens between the two is the newest code on the boot path: the save now goes
+  through `gc_storage.c`, which reaches a memory card and a filesystem.
 
-- **`GC_MEMCARD=0` coupe maintenant tout le sous-systeme de stockage**, pas
-  seulement le pak : `gc_storage` echoue en lecture comme en ecriture, rien ne
-  sonde ni ne monte de carte memoire, et l'EEPROM vit en RAM pour la session.
-  C'est exactement l'etat du portage avant le 2026-09-04, ce qui en fait une
-  vraie compilation d'isolation.
+- **`GC_MEMCARD=0` now cuts the whole storage subsystem**, not just the pak:
+  `gc_storage` fails on read and on write, nothing probes or mounts a memory
+  card, and the EEPROM lives in RAM for the session. That is exactly the state
+  of the port before 2026-09-04, which makes it a real isolation build.
 
-### Quatrieme run : ca meurt dans la premiere display list (2026-09-04)
+### Fourth run: it dies in the first display list (2026-09-04)
 
-L'echelle de balises a fait exactement son travail. Journal materiel, build
-`10:41:34` (stockage complet) :
+The ladder of markers did exactly its job. Hardware log, build `10:41:34` (full
+storage):
 
 ```
 boot: fat slots 0x2 (...), gecko off (slot B is libfat)
@@ -1106,91 +1049,84 @@ init: osEepromProbe done
 sched: first graphics task
 ```
 
-**Le jeu va nettement plus loin qu'au run precedent** — la correction Gecko et le
-verrou carte ont donc bien servi — et il s'arrete sur `sched: first graphics
-task`, marque emise juste avant `gc_gfx_run_dl`. La mort est donc dans la
-premiere liste d'affichage, ou juste apres.
+**The game gets markedly further than in the previous run** — so the Gecko fix
+and the card lock did help — and it stops on `sched: first graphics task`, a
+marker emitted just before `gc_gfx_run_dl`. So the death is inside the first
+display list, or just after it.
 
-Deux details a noter : `sched: first audio task` **n'apparait jamais** alors que
-sous Dolphin il precede `osPfsInit` ; et `pfs: osPfsFreeBlocks` et la suite, qui
-sous Dolphin viennent apres la premiere tache graphique, manquent aussi.
+Two details worth noting: `sched: first audio task` **never appears**, and
+`pfs: osPfsFreeBlocks` and what follows are missing too.
 
-**C'est une vraie exception CPU** : l'utilisateur voit le pave de registres de
-libogc (confirme). Donc le handler s'execute — il n'arrive simplement pas a
-ecrire.
+**It is a real CPU exception**: the user sees libogc's register page
+(confirmed). So the handler runs — it simply cannot write.
 
-#### PAL elimine par mesure
+#### PAL eliminated by measurement
 
-Seule difference systematique avec Dolphin : la console est PAL (`640x576`), et
-PAL n'est pas cosmetique ici — le jeu ajoute `PAL_HEIGHT_DIFFERENCE` a chaque
-resolution dans `video_init`, donc il dessine dans un espace ecran de 320x264 au
-lieu de 320x240, et le mode PAL de libogc a un EFB de 528 lignes recopie vers un
-framebuffer externe de 576 la ou NTSC fait 480 vers 480. **Tous** les facteurs
-d'echelle entre les coordonnees du jeu et l'EFB changent.
+The only systematic difference from Dolphin: the console is PAL (`640x576`), and
+PAL is not cosmetic here — the game adds `PAL_HEIGHT_DIFFERENCE` to every
+resolution in `video_init`, so it draws into a 320x264 screen space instead of
+320x240, and libogc's PAL mode has a 528-line EFB copied to a 576-line external
+framebuffer where NTSC does 480 to 480. **Every** scale factor between the
+game's coordinates and the EFB changes.
 
-`FallbackRegion = 2` dans Dolphin ne deplace pas `VIDEO_GetPreferredMode` hors
-NTSC, donc le knob **`GC_FORCE_PAL`** a ete ajoute : il impose
-`TVPal576IntDfScale` et `osTvType = OS_TV_PAL` (libogc lit le standard TV dans
-les globales SRAM, pas dans le mode configure, donc forcer le mode seul
-laisserait les deux moities du portage en desaccord sur la hauteur d'ecran).
+So the **`GC_FORCE_PAL`** knob was added: it forces `TVPal576IntDfScale` and
+`osTvType = OS_TV_PAL` (libogc reads the TV standard from the SRAM globals, not
+from the configured mode, so forcing the mode alone would leave the two halves
+of the port disagreeing about screen height).
 
-**Resultat : sous Dolphin en PAL force, le jeu tourne.** 29 battements, aucune
-exception, `640x576` confirme dans la trace. Le chemin PAL change bien des
-choses — `trin proj: hw 141, cpu fallback 44 (no-w 44)` la ou NTSC fait
-`hw 152, cpu fallback 0` — mais il ne plante pas. **PAL seul n'est pas la
-cause**, et c'est une mesure, pas une impression.
+**Result: with PAL forced, the game runs.** 29 beats, no exception, `640x576`
+confirmed in the trace. The PAL path does change things — `trin proj: hw 141,
+cpu fallback 44 (no-w 44)` where NTSC gives `hw 152, cpu fallback 0` — but it
+does not crash. **PAL alone is not the cause**, and that is a measurement, not
+an impression.
 
-#### Un defaut dans mon propre chemin de plantage
+#### A defect in my own crash path
 
-`__wrap_c_default_exceptionhandler` remettait `MSR[EE] = 0` avant d'appeler le
-handler de libogc. Ca annulait tout le mecanisme de seconde chance : le vidage
-de libogc **ne revient jamais**, il boucle en scrutant la manette, donc avec les
-interruptions coupees aucun autre thread ne tourne plus et `gc_crash_poll` ne
-pouvait par construction jamais ecrire le rapport. Les interruptions restent
-desormais actives — la boucle de libogc est scrutee de toute facon — et le
-thread de boot peut finir ce que le handler n'a pas pu.
+`__wrap_c_default_exceptionhandler` was setting `MSR[EE] = 0` before calling
+libogc's handler. That cancelled the whole second-chance mechanism: libogc's
+dump **never returns**, it loops polling the controller, so with interrupts off
+no other thread runs any more and `gc_crash_poll` could never, by construction,
+write the report. Interrupts now stay on — libogc's loop is polled anyway — and
+the boot thread can finish what the handler could not.
 
-Ajoute aussi : `sched: first graphics task done`, pour que le journal distingue
-« mort dans la premiere liste » de « passe au-dela ».
+Also added: `sched: first graphics task done`, so that the log can tell "died in
+the first list" from "got past it".
 
-### La carte SD corrompue, et le journal preattribue (2026-09-04)
+### The corrupted SD card, and the preallocated log (2026-09-04)
 
-La carte de l'utilisateur a fini corrompue au point d'exiger un reformatage,
-apres plusieurs runs se terminant chacun par une exception CPU. Le journal en
-est la cause plausible, et sa forme etait mauvaise.
+The user's card ended up corrupted badly enough to need a reformat, after
+several runs each ending in a CPU exception. The log is the plausible cause, and
+its shape was wrong.
 
-**Ajouter etait la forme dangereuse.** Chaque `fopen(path, "a")` qui allonge le
-fichier fait allouer un cluster a libfat et **reecrit la FAT**, et le portage
-faisait ca environ une fois par seconde sur une machine qui meurt en cours de
-route. Une faute entre la mise a jour de la FAT et celle de l'entree de
-repertoire laisse le volume incoherent — pas seulement ce fichier.
+**Appending was the dangerous shape.** Every `fopen(path, "a")` that extends the
+file makes libfat allocate a cluster and **rewrite the FAT**, and the port was
+doing that about once a second on a machine that dies partway through. A fault
+between the FAT update and the directory entry update leaves the volume
+inconsistent — not just that file.
 
-**Le fichier est desormais cree une fois a sa taille definitive et ne grandit
-plus.** La chaine de clusters est ecrite au boot, avant que le moindre code de
-jeu ne tourne ; chaque vidange ensuite est `fopen("r+b")`, `fseek`, ecriture,
-`fclose` — ca touche les *donnees* du fichier et une entree de repertoire,
-jamais la table d'allocation. Le pire qu'une faute en pleine vidange puisse
-faire maintenant, c'est abimer la fin du journal.
+**The file is now created once at its final size and never grows.** The cluster
+chain is written at boot, before any game code runs; every flush after that is
+`fopen("r+b")`, `fseek`, write, `fclose` — which touches the file's *data* and a
+directory entry, never the allocation table. The worst a fault mid-flush can do
+now is damage the end of the log.
 
-256 Ko : environ une minute de heartbeat `GC_DEBUG`, bien plus que ce qu'aucun
-run n'a atteint, pour une a deux secondes de boot sur un SD Gecko. Le
-remplissage est fait de sauts de ligne plutot que de zeros, pour que le fichier
-s'ouvre proprement comme du texte.
+256 KB: about a minute of `GC_DEBUG` heartbeat, far more than any run has
+reached, for one or two seconds of boot on an SD Gecko. The padding is newlines
+rather than zeros, so the file opens cleanly as text.
 
-**Rien de tout ceci n'est testable sous Dolphin**, qui n'a pas de carte SD
-GameCube — exactement le piege qui avait deja coute un run sur
-`gc_logfile_mark`. Donc chaque etape **degrade vers le chemin d'ajout qui
-fonctionnait deja** plutot que vers l'absence de journal : une ecriture courte a
-la creation, ou un `fopen` qui echoue a la vidange, bascule `sAppendMode` et le
-portage continue a l'ancienne.
+**None of this was testable under Dolphin**, which has no GameCube SD card —
+exactly the trap that had already cost a run on `gc_logfile_mark`. So each step
+**degrades to the append path that already worked** rather than to no log at
+all: a short write at creation, or a failing `fopen` at flush time, flips
+`sAppendMode` and the port carries on the old way.
 
-### LA cause du plantage materiel : le message de fin de tache (2026-09-04)
+### THE cause of the hardware crash: the task completion message (2026-09-04)
 
-Trouvee sur une **photographie de l'ecran de plantage**, apres cinq runs. Le
-journal a designe l'endroit, la photo a donne les registres, et la reponse etait
-dans ce depot depuis le debut.
+Found on a **photograph of the crash screen**, after five runs. The log named
+the place, the photograph gave the registers, and the answer had been in this
+repository all along.
 
-#### Ce que la photo disait
+#### What the photograph said
 
 ```
 Exception (Floating Point) occurred!
@@ -1202,50 +1138,50 @@ CODE DUMP:
 80115238: C00A321C ...          (lfs f0, 0x321C(r10))
 ```
 
-`addr2line` sur l'ELF fige :
+`addr2line` against the frozen ELF:
 
-| adresse | symbole |
+| address | symbol |
 |---|---|
 | `80115238` | `_svfprintf_r` |
 | `8000599c` | `__wrap_c_default_exceptionhandler` |
 | `8010383c` | `default_exceptionhandler` |
-| `80097844` | `gfxtask_wait` + 0x38, juste apres `bl osRecvMesg` |
+| `80097844` | `gfxtask_wait` + 0x38, just after `bl osRecvMesg` |
 | `800a5d84` | `main_game_loop` |
 | `800a5ed0` | `thread3_main` |
 
-Deux plantages en un, et il faut les separer.
+Two crashes in one, and they have to be separated.
 
-#### Le plantage secondaire : mon gestionnaire detruisait la preuve
+#### The secondary crash: my handler was destroying the evidence
 
-`SRR1 = 00009030` : `MSR_FP` (0x2000) **absent**. Une exception PowerPC efface
-`MSR[FP]` et le vecteur de libogc ne le restaure pas. La toute premiere
-`gc_logfile_printf` du handler atteint `_svfprintf_r` de newlib, qui touche un
-registre flottant quelle que soit la chaine de format — donc **seconde
-exception**, « Floating Point unavailable », qui **ecrase `SRR0`/`SRR1` avec les
-siens**. Voila pourquoi cinq runs n'ont jamais produit de rapport et pourquoi
-l'ecran montrait le gestionnaire de plantage en train de planter.
+`SRR1 = 00009030`: `MSR_FP` (0x2000) **absent**. A PowerPC exception clears
+`MSR[FP]` and libogc's vector does not restore it. The handler's very first
+`gc_logfile_printf` reaches newlib's `_svfprintf_r`, which touches a
+floating-point register whatever the format string is — so a **second
+exception**, "Floating Point unavailable", which **overwrites `SRR0`/`SRR1` with
+its own**. That is why five runs never produced a report and why the screen
+showed the crash handler crashing.
 
-Corrige de deux facons, ceinture et bretelles :
+Fixed two ways, belt and braces:
 
-- **`mtmsr(msr | MSR_FP | MSR_EE)`** en tete du handler.
-- **Le rapport ne passe plus par printf du tout** : `crash_puts`, `crash_hex` et
-  `crash_dec`, une trentaine de lignes, aucune dependance a la bibliotheque C.
-  Le rapport est la seule chose qui ne doit pas dependre de l'etat d'une machine
-  qui vient de fauter. Le `fprintf` du chemin de vidange du journal est parti
-  aussi, pour la meme raison.
+- **`mtmsr(msr | MSR_FP | MSR_EE)`** at the head of the handler.
+- **The report no longer goes through printf at all**: `crash_puts`,
+  `crash_hex` and `crash_dec`, about thirty lines, with no dependency on the C
+  library. The report is the one thing that must not depend on the state of a
+  machine that has just faulted. The `fprintf` on the log's flush path went too,
+  for the same reason.
 
-#### Le plantage reel : `task->msg` est NULL et le jeu le dereference
+#### The real crash: `task->msg` is NULL and the game dereferences it
 
-`DAR 00000004` — une lecture a l'adresse 4 — et la trame interrompue est
-`gfxtask_wait`. Le desassemblage donne l'instruction :
+`DAR 00000004` — a read at address 4 — and the interrupted frame is
+`gfxtask_wait`. The disassembly gives the instruction:
 
 ```
 80097840:  bl   osRecvMesg
-80097844:  lwz  r8, 8(r1)          ; le message recu
-80097854:  lwz  r3, 4(r8)          ; <-- mesg[1], adresse 4 si r8 == NULL
+80097844:  lwz  r8, 8(r1)          ; the received message
+80097854:  lwz  r3, 4(r8)          ; <-- mesg[1], address 4 if r8 == NULL
 ```
 
-et la source (`src/rcp_dkr.c:365`) :
+and the source (`src/rcp_dkr.c:365`):
 
 ```c
 s32 gfxtask_wait(void) {
@@ -1257,15 +1193,15 @@ s32 gfxtask_wait(void) {
 }
 ```
 
-Le message recu etait NULL. Pourquoi : **`gfxtask_run_xbus`
-(`src/rcp_dkr.c:166`), la seule fonction de soumission qui tourne — c'est elle
-qui met `gGfxTaskIsRunning = TRUE` — renseigne `mesgQueue` mais ne renseigne
-jamais `mesg`.** `gGfxTaskBuf` est un tableau en BSS, donc `task->msg` vaut NULL
-sur *chaque* tache graphique que DKR soumet. Les deux autres soumetteurs, ceux
-qui posent `dkrtask->mesg = &gGfxTaskMesgNums[0]`, sont marques `UNUSED`.
+The received message was NULL. Why: **`gfxtask_run_xbus`
+(`src/rcp_dkr.c:166`), the only submission function that runs — it is the one
+that sets `gGfxTaskIsRunning = TRUE` — fills in `mesgQueue` but never fills in
+`mesg`.** `gGfxTaskBuf` is an array in BSS, so `task->msg` is NULL for *every*
+graphics task DKR submits. The other two submitters, the ones that set
+`dkrtask->mesg = &gGfxTaskMesgNums[0]`, are marked `UNUSED`.
 
-Et le vrai scheduler prevoit exactement ce cas. `libultra/src/sc/sched.c:522`,
-**dans ce depot** :
+And the real scheduler provides for exactly this case.
+`libultra/src/sc/sched.c:522`, **in this repository**:
 
 ```c
 s32 __scTaskComplete(OSSched *sc, OSScTask *t) {
@@ -1277,57 +1213,54 @@ s32 __scTaskComplete(OSSched *sc, OSScTask *t) {
     }
 ```
 
-avec `s32 D_800DE730[] = { OSMESG_SWAP_BUFFER, OSMESG_SWAP_BUFFER }`
-(`sched.c:68`). Le waiter lit le **second** mot et le passe a `fb_update` comme
-`gScreenStatus`, ou `OSMESG_SWAP_BUFFER` (0) veut dire « presente cette image »
-et `MESG_SKIP_BUFFER_SWAP` (8) « non ».
+with `s32 D_800DE730[] = { OSMESG_SWAP_BUFFER, OSMESG_SWAP_BUFFER }`
+(`sched.c:68`). The waiter reads the **second** word and passes it to
+`fb_update` as `gScreenStatus`, where `OSMESG_SWAP_BUFFER` (0) means "present
+this frame" and `MESG_SKIP_BUFFER_SWAP` (8) means "do not".
 
-`run_task` faisait `osSendMesg(task->msgQ, task->msg, ...)` sans condition. Il
-envoyait donc NULL, une fois par image, et le jeu le dereferencait. Correction :
-la substitution ci-dessus, transcrite.
+`run_task` was doing `osSendMesg(task->msgQ, task->msg, ...)` unconditionally.
+So it sent NULL, once per frame, and the game dereferenced it. The fix: the
+substitution above, transcribed.
 
-#### Pourquoi Dolphin n'a jamais rien vu
+#### Why Dolphin never saw anything
 
-**Dolphin n'emule pas la MMU pour du homebrew.** Une lecture a une adresse non
-mappee y renvoie simplement des donnees au lieu de fauter, donc `mesg[1]`
-ramenait zero et le jeu continuait. Verifie deliberement : le portage a ete fait
-ecrire a l'adresse 4 **et** a 0xDEADBEE0, et il a poursuivi les deux fois sans
-broncher. Il a fallu `__builtin_trap()` pour obtenir une exception sous
-l'emulateur.
+**Dolphin does not emulate the MMU for homebrew.** A read at an unmapped
+address simply returns data there instead of faulting, so `mesg[1]` came back as
+zero and the game carried on. Checked deliberately: the port was made to write
+to address 4 **and** to 0xDEADBEE0, and it continued both times without
+flinching. It took a `__builtin_trap()` to get an exception out of the emulator.
 
-Sur Gekko les BAT couvrent 0x80000000-0x8FFFFFFF et 0xC0000000-0xCFFFFFFF ;
-l'adresse 4 n'est dans aucun, et il n'y a pas de table de pages. DSI immediat.
+On Gekko the BATs cover 0x80000000-0x8FFFFFFF and 0xC0000000-0xCFFFFFFF; address
+4 is in neither, and there is no page table. Immediate DSI.
 
-**C'est la limite de Dolphin comme instrument, et elle est structurelle** : ce
-sur quoi le portage differe le plus du materiel — la MMU, les caches,
-l'alignement, l'EXI — est precisement ce que l'emulateur est le plus indulgent a
-propos. Trois defauts trouves ce jour sont dans cette categorie : la console
-Gecko ecrivant dans le SD Gecko, la corruption de la FAT par ajout, et celui-ci.
+**That is Dolphin's limit as an instrument, and it is structural**: the things
+the port differs most about — the MMU, caches, alignment, EXI — are precisely
+what the emulator is most forgiving about. Three defects found that day are in
+that category: the Gecko console writing into the SD Gecko, the FAT corruption
+by appending, and this one.
 
-#### Trois ecarts de fidelite releves en chemin, non corriges
+#### Three fidelity gaps noted on the way, not fixed
 
-Lus dans `libultra/src/sc/sched.c` et notes ici plutot que changes dans le meme
-commit qu'une correction de plantage :
+Read in `libultra/src/sc/sched.c` and noted here rather than changed in the same
+commit as a crash fix:
 
-1. **`sc->frameCount` s'incremente a chaque retrace** dans l'original
-   (`sched.c:369`), pas par tache comme ici.
-2. **`OS_SC_LAST_TASK` differe sa reponse.** `__scTaskComplete` range la tache
-   dans `sc->unkTask` et ne repond pas tant que `frameCount < 2` ; la reponse
-   part plus tard, sur un retrace. C'est le cadencement a 30 images/seconde du
-   jeu — le commentaire de `sched.c:370` le dit : « If you want to make the game
-   60FPS, change this to 2 ». `gfxtask_run_xbus` pose bien `OS_SC_LAST_TASK`.
-   Le portage repond immediatement, donc il ne plafonne pas la cadence de la
-   meme facon.
-3. **Le message de retrace est `sc` dans l'original**, pas `&sc->retraceMsg` —
-   mais `OSSched` commence par `OSScMsg retraceMsg`, donc c'est la meme adresse.
-   Verifie, aucun ecart.
+1. **`sc->frameCount` increments on every retrace** in the original
+   (`sched.c:369`), not per task as here.
+2. **`OS_SC_LAST_TASK` defers its reply.** `__scTaskComplete` stores the task in
+   `sc->unkTask` and does not reply while `frameCount < 2`; the reply goes out
+   later, on a retrace. That is the game's 30 frames-per-second ceiling — the
+   comment at `sched.c:370` says so: "If you want to make the game 60FPS, change
+   this to 2". `gfxtask_run_xbus` does set `OS_SC_LAST_TASK`. The port replies
+   immediately, so it does not cap the rate the same way.
+3. **The retrace message is `sc` in the original**, not `&sc->retraceMsg` — but
+   `OSSched` starts with `OSScMsg retraceMsg`, so it is the same address.
+   Checked, no difference.
+### The game was reading an N64 hardware register (2026-09-04)
 
-### Le jeu lisait un registre materiel N64 (2026-09-04)
-
-Correction du message de fin de tache livree, seconde photographie de l'ecran de
-plantage. Le jeu **va nettement plus loin** : la trame interrompue est
-`load_menu_with_level_background`, donc `gfxtask_wait` est franchi et le portage
-est entre dans les menus.
+With the task completion message fixed and shipped, a second photograph of the
+crash screen. The game gets **markedly further**: the interrupted frame is
+`load_menu_with_level_background`, so `gfxtask_wait` is past and the port has
+entered the menus.
 
 ```
 Exception (Interrupt) occurred!
@@ -1337,1286 +1270,1283 @@ STACK DUMP:
 80109e10 --> 800d8434 --> 0000001a --> 800a4b48 --> 800a64d8 --> 800a6804 --> ...
 ```
 
-| adresse | symbole |
+| address | symbol |
 |---|---|
 | `80109e10` | `memcpy` |
 | `800d8434` | `__console_write` (libogc, console.c:586) |
-| `800a4b48` | `load_menu_with_level_background`, retour de `bl cam_init` |
+| `800a4b48` | `load_menu_with_level_background`, return from `bl cam_init` |
 | `800a64d8` | `main_game_loop` |
 
-**`SRR1 = 0000B030` porte `MSR_FP`** : le gestionnaire de plantage ne se saborde
-plus, la correction de la FPU tient.
+**`SRR1 = 0000B030` carries `MSR_FP`**: the crash handler no longer sabotages
+itself, the FPU fix holds.
 
-#### Lire le dump correctement : ce n'etait pas la premiere exception
+#### Reading the dump correctly: this was not the first exception
 
-`SRR0` pointe sur `lwz r7,4(r4)` dans `memcpy`, avec `r4` dans le framebuffer
-non cache — un chargement qui ne peut pas fauter. Et `DAR` ne correspond pas a
-`r4`. Le nom de l'exception est « Interrupt », qui n'ecrit ni `DAR` ni `DSISR`.
-**Donc `DAR` est perime, et il vient de l'exception d'avant.**
+`SRR0` points at `lwz r7,4(r4)` inside `memcpy`, with `r4` in the uncached
+framebuffer — a load that cannot fault. And `DAR` does not correspond to `r4`.
+The exception is named "Interrupt", which writes neither `DAR` nor `DSISR`.
+**So `DAR` is stale, and it comes from the previous exception.**
 
-`0xA4600010` = `PHYS_TO_K1(PI_BASE_REG + 0x10)` = **`PI_STATUS_REG` du N64**.
+`0xA4600010` = `PHYS_TO_K1(PI_BASE_REG + 0x10)` = **the N64's
+`PI_STATUS_REG`**.
 
-Et la pile nomme le coupable : `cam_init`. `src/camera.c:148` fait
-`WAIT_ON_IOBUSY(stat)` avant de lire le mot de cartouche que son controle
-anti-piratage veut. Le macro (`include/PRinternal/piint.h:127`) tourne sur
-`IO_READ(PI_STATUS_REG)` jusqu'a ce que le PI se declare libre. `IO_READ` est
-`*(vu32 *) PHYS_TO_K1(addr)` : un dereferencement d'un registre memoire-mappe du
-N64. Les BAT du Gekko couvrent `0x80000000-0x8FFFFFFF` et
-`0xC0000000-0xCFFFFFFF`, il n'y a pas de table de pages, donc `0xA4600010` n'est
-mappe nulle part et la toute premiere lecture est un **DSI**.
+And the stack names the culprit: `cam_init`. `src/camera.c:148` does
+`WAIT_ON_IOBUSY(stat)` before reading the cartridge word its anti-piracy check
+wants. The macro (`include/PRinternal/piint.h:127`) spins on
+`IO_READ(PI_STATUS_REG)` until the PI declares itself free. `IO_READ` is
+`*(vu32 *) PHYS_TO_K1(addr)`: a dereference of an N64 memory-mapped register.
+Gekko's BATs cover `0x80000000-0x8FFFFFFF` and `0xC0000000-0xCFFFFFFF`, there is
+no page table, so `0xA4600010` is mapped nowhere and the very first read is a
+**DSI**.
 
-Verifie dans le binaire : `8001bcac: lis r7,-23456` puis `ori r7,r7,16` donne
-`r7 = 0xA4600010`, suivi de `lwz r9,0(r7)` / `andi. r9,r9,3` / `bne` — la boucle
-d'attente, en clair, dans `cam_init`.
+Verified in the binary: `8001bcac: lis r7,-23456` then `ori r7,r7,16` gives
+`r7 = 0xA4600010`, followed by `lwz r9,0(r7)` / `andi. r9,r9,3` / `bne` — the
+wait loop, in plain sight, inside `cam_init`.
 
-#### Correction : les registres N64 sont repondus, pas dereferences
+#### The fix: N64 registers are answered, not dereferenced
 
-`platform/gc/include/PR/rcp.h` reprend le vrai en-tete par `#include_next` puis
-redefinit `IO_READ` et `IO_WRITE` vers `gc_io_read` / `gc_io_write`
-(`platform/gc/gc_n64io.c`). Le code du jeu n'est pas touche, tous les sites
-d'appel restent intacts, et la decision se place la ou vivent deja les autres
-substitutions materielles.
+`platform/gc/include/PR/rcp.h` picks up the real header through `#include_next`
+and then redefines `IO_READ` and `IO_WRITE` to `gc_io_read` / `gc_io_write`
+(`platform/gc/gc_n64io.c`). The game code is untouched, every call site stays
+intact, and the decision lives where the other hardware substitutions already
+live.
 
-Ce que le portage repond, et d'ou ca vient — meme principe que `D_B0000578` dans
-`stubs.c`, ou le controle passe *parce que la reponse est juste*, pas parce
-qu'il a ete neutralise :
+What the port answers, and where it comes from — the same principle as
+`D_B0000578` in `stubs.c`, where the check passes *because the answer is right*,
+not because it was neutered:
 
-| registre | reponse | pourquoi |
+| register | answer | why |
 |---|---|---|
-| `PI_STATUS_REG` | `0` | Il n'y a pas de PI et aucun DMA cartouche en vol : `osPiStartDma` est un transfert ARQ deja termine quand il rend la main. « Libre » est la verite sur cette machine, et toute autre reponse bloquerait `WAIT_ON_IOBUSY` a jamais. |
-| `SP_DMEM_START` | `0xFFFFFFFF` | Ce que `drm_validate_dmem` attend d'un N64 demarre. |
-| `SP_IMEM_START` | `6102` | Le CIC, comme `osCicId` dans `ultra/os_system.c`. |
-| `0x200`, `0x284` | mots ROM | Les deux autres controles anti-piratage. |
-| tout le reste | `0`, **compte** | Un registre non modelise doit apparaitre dans le heartbeat comme un nombre, pas sur une television comme une exception. |
+| `PI_STATUS_REG` | `0` | There is no PI and no cartridge DMA in flight: `osPiStartDma` is an ARQ transfer that has already finished when it returns. "Idle" is the truth on this machine, and any other answer would hang `WAIT_ON_IOBUSY` forever. |
+| `SP_DMEM_START` | `0xFFFFFFFF` | What `drm_validate_dmem` expects of a booted N64. |
+| `SP_IMEM_START` | `6102` | The CIC, as `osCicId` in `ultra/os_system.c`. |
+| `0x200`, `0x284` | ROM words | The other two anti-piracy checks. |
+| everything else | `0`, **counted** | A register that is not modelled should appear in the heartbeat as a number, not on a television as an exception. |
 
-Les quatre derniers sont sous `#ifdef ANTI_TAMPER`, que `Makefile.gc` ne definit
-pas — ils sont repondus quand meme pour qu'activer le drapeau ne soit pas une
-nouvelle facon de planter.
+The last four are under `#ifdef ANTI_TAMPER`, which `Makefile.gc` does not
+define — they are answered anyway so that turning the flag on is not a new way
+to crash.
 
-Verification apres reconstruction complete : **zero immediat `0xA4600000` dans
-tout le binaire**, et deux appels a `gc_io_read` (les deux `IO_READ` du macro).
-Le heartbeat porte `n64 io: N reads, N writes, N unknown (last %08x)`.
+Checked after a full rebuild: **no `0xA4600000` immediate anywhere in the
+binary**, and two calls to `gc_io_read` (the macro's two `IO_READ`s). The
+heartbeat carries `n64 io: N reads, N writes, N unknown (last %08x)`.
 
-**Piege de dependances :** ajouter un en-tete que le suivi `-MF` ne connaissait
-pas ne reconstruit rien. Le premier build apres la creation du shadow avait
-encore `lis r7,-23456` dans `cam_init`. Un ajout d'en-tete de shadow demande un
+**Dependency trap:** adding a header the `-MF` tracking did not know about
+rebuilds nothing. The first build after the shadow was created still had
+`lis r7,-23456` in `cam_init`. Adding a shadow header requires an
 `rm -rf build/gc/{src,platform,libultra}`.
 
-#### Et une correction de ma correction : ne plus laisser tourner la machine
+#### And a fix to my fix: stop letting the machine run
 
-Le handler laissait `MSR[EE]` actif avant de passer la main au vidage de libogc.
-Ce raisonnement etait bon tant que le handler etait peu fiable — il donnait au
-thread de boot une seconde chance d'ecrire le rapport — et il a cesse de l'etre
-des que le handler a ete repare. Ce qu'il coutait, en attendant, c'est la preuve :
-le vidage de libogc **ne revient jamais**, il boucle en scrutant la manette, donc
-avec les interruptions actives tous les autres threads continuent sur une machine
-deja fautee — et **l'exception suivante dessine son propre vidage par-dessus le
-premier**.
+The handler was leaving `MSR[EE]` on before handing over to libogc's dump. That
+reasoning was sound while the handler was unreliable — it gave the boot thread a
+second chance to write the report — and it stopped being sound the moment the
+handler was repaired. What it cost, meanwhile, was the evidence: libogc's dump
+**never returns**, it loops polling the controller, so with interrupts on every
+other thread carries on running on a machine that has already faulted — and
+**the next exception draws its own dump over the first one**.
 
-C'est exactement ce que la photo montrait : un « Exception (Interrupt) » dans la
-console framebuffer, sur le thread de jeu, alors que `DAR` portait encore le
-`A4600010` du DSI qui avait tout declenche. Un plantage, un rapport, et plus rien
-qui tourne ensuite pour l'ecraser. La FPU reste active : libogc s'apprete a
-formater un ecran de registres.
+That is exactly what the photograph showed: an "Exception (Interrupt)" in the
+framebuffer console, on the game thread, while `DAR` still carried the
+`A4600010` of the DSI that had started it all. One crash, one report, and
+nothing running afterwards to overwrite it. The FPU stays on: libogc is about to
+format a screen of registers.
 
-#### Note ouverte : la console framebuffer coute tres cher
+#### Open note: the framebuffer console is very expensive
 
-Le desassemblage de `__console_write` donne son defilement :
-`src = destbuffer + stride*16`, `len = stride*con_yres - 16`. Avec le PAL
-640x576 de l'utilisateur, **737 264 octets de `memcpy` non cache par ligne
-defilee** — et `gc_log` en imprime une soixantaine par battement. C'est aussi
-une lecture de 20 Ko *au-dela* du framebuffer, parce que `CON_Init` recoit
-`ystart = 20` et `yres = xfbHeight` : la console deborde de 20 lignes en bas.
-A corriger (geometrie, et sortir la console du framebuffer que GX possede), mais
-pas dans le meme commit qu'un plantage.
+Disassembling `__console_write` gives its scroll: `src = destbuffer +
+stride*16`, `len = stride*con_yres - 16`. With the user's 640x576 PAL, that is
+**737 264 bytes of uncached `memcpy` per scrolled line** — and `gc_log` prints
+about sixty of them per beat. It is also a 20 KB read *past* the framebuffer,
+because `CON_Init` is given `ystart = 20` and `yres = xfbHeight`: the console
+overruns the bottom by 20 lines. To be fixed (geometry, and getting the console
+out of the framebuffer GX owns), but not in the same commit as a crash.
 
-### Le jeu tourne, et le rapport de plantage marche enfin (2026-09-04)
+### The game runs, and the crash report finally works (2026-09-04)
 
-Sixieme run. Le journal contient **plusieurs battements** puis un bloc `CRASH`
-complet -- le premier que ce portage ait jamais reussi a ecrire. Trois choses en
-sortent.
+Sixth run. The log contains **several beats** and then a complete `CRASH` block
+— the first this port has ever managed to write. Three things come out of it.
 
-#### 1. Le portage passe le boot et dessine
+#### 1. The port gets through boot and draws
 
-`n64 io: 2 reads, 0 unknown` : le spin `WAIT_ON_IOBUSY` de `cam_init` passe
-desormais par `gc_io_read`, et rien d'autre ne touche un registre N64. Le
-heartbeat montre `game 320x264` (les +24 lignes PAL du jeu), `am frameSamples
-880` (22050*2/50, l'audio suit le 50 Hz tout seul), des display lists reelles,
+`n64 io: 2 reads, 0 unknown`: `cam_init`'s `WAIT_ON_IOBUSY` spin now goes
+through `gc_io_read`, and nothing else touches an N64 register. The heartbeat
+shows `game 320x264` (the game's PAL +24 lines), `am frameSamples 880`
+(22050*2/50, the audio follows 50 Hz by itself), real display lists,
 `fills 2 ... at (0,0)-(319,263)`.
 
-#### 2. Ce qui l'arretait, c'etait moi
+#### 2. What was stopping it was me
 
 ```
 =================== CRASH ===================
 cause    mempool_alloc_safe failed: 0 bytes, tag 0x7f7f7fff
 ```
 
-`0x7F7F7FFF` est **`COLOUR_TAG_GREY`** (`src/memory.h:54`) -- un tag
-parfaitement ordinaire, pas de la memoire corrompue. C'est donc une demande
-d'allocation de **zero octet**, depuis l'un des trois sites de
-`asset_loading.c`, c'est-a-dire un asset dont la taille enregistree est nulle.
+`0x7F7F7FFF` is **`COLOUR_TAG_GREY`** (`src/memory.h:54`) — a perfectly
+ordinary tag, not corrupt memory. So it is a request to allocate **zero bytes**,
+from one of `asset_loading.c`'s three sites, i.e. an asset whose recorded size
+is zero.
 
-Et le jeu tolere ca. `dump_memory_to_cpak` (`src/thread0_epc.c:160`) n'ecrit son
-fichier et ne boucle **que** `if (get_filtered_cheats() &
-CHEAT_EPC_LOCK_UP_DISPLAY)`. Sans le cheat -- donc toujours, en session normale
--- la fonction entiere est un no-op et `mempool_alloc_safe` poursuit vers
+And the game tolerates that. `dump_memory_to_cpak` (`src/thread0_epc.c:160`)
+only writes its file and loops `if (get_filtered_cheats() &
+CHEAT_EPC_LOCK_UP_DISPLAY)`. Without the cheat — so always, in a normal session
+— the whole function is a no-op and `mempool_alloc_safe` carries on to
 `mempool_slot_find`.
 
-Le portage, lui, appelait `gc_fatal` a tous les coups. J'avais ecrit dans le
-commentaire que c'etait deliberate ; c'etait un changement de comportement que
-ce portage n'avait aucune raison de faire, et il a coute un run. **Le rapport
-reste, l'arret disparait**, et il est ecrit une seule fois pour qu'un appelant
-en boucle ne remplisse pas la carte.
+The port, meanwhile, called `gc_fatal` every time. I had written in the comment
+that this was deliberate; it was a behaviour change this port had no business
+making, and it cost a run. **The report stays, the halt goes**, and it is
+written once so that a caller in a loop cannot fill the card.
 
-Le rapport nommait aussi `caller 00000000`, aussi inutile que ca en a l'air :
-il enregistrait `epc`, que `mempool_alloc_safe` construit comme
-`stack_pointer()->sp`. Il enregistre desormais
-`__builtin_return_address(1)` -- le code de jeu qui a demande l'allocation --
-et `(0)`, l'interieur de `mempool_alloc_safe`.
+The report also said `caller 00000000`, as useless as it sounds: it recorded
+`epc`, which `mempool_alloc_safe` builds as `stack_pointer()->sp`. It now
+records `__builtin_return_address(1)` — the game code that asked for the
+allocation — and `(0)`, the inside of `mempool_alloc_safe`.
 
-#### 3. La console framebuffer coute la moitie de la machine
+#### 3. The framebuffer console costs half the machine
 
-`clock: 759 ms since last beat` au premier battement, puis **1659 ms** et
-**1600 ms** une fois la console remplie et en train de defiler. Soixante
-retraces valent 1200 ms sur une console 50 Hz.
+`clock: 759 ms since last beat` on the first beat, then **1659 ms** and
+**1600 ms** once the console was full and scrolling. Sixty retraces are 1200 ms
+on a 50 Hz console.
 
-Le desassemblage de `__console_write` donne le defilement :
-`src = destbuffer + stride*16`, `len = stride*con_yres - 16`. En PAL 640x576
-cela fait **737 264 octets de `memcpy` non cache par ligne defilee**, dans le
-framebuffer meme que GX recopie -- et le heartbeat `GC_DEBUG` imprime une
-soixantaine de lignes par battement.
+Disassembling `__console_write` gives the scroll: `src = destbuffer +
+stride*16`, `len = stride*con_yres - 16`. In 640x576 PAL that is **737 264
+bytes of uncached `memcpy` per scrolled line**, into the very framebuffer GX
+copies out of — and the `GC_DEBUG` heartbeat prints about sixty lines per beat.
 
-Deux corrections :
+Two fixes:
 
-- **La geometrie.** `CON_Init(fb, 20, 20, rmode->fbWidth, rmode->xfbHeight, ...)`
-  -- les arguments canoniques de libogc -- decrit une region qui deborde de
-  vingt lignes en bas du framebuffer. Le defilement lit alors 25 Ko *au-dela* de
-  la fin du tampon a chaque ligne. Soustraire les marges rend ca impossible.
-- **L'extinction.** Apres `gc_gfx_init`, GX possede l'ecran : la console est du
-  bruit en ecriture seule, que personne ne peut lire, et sur cette console il
-  n'y a pas non plus d'USB Gecko (slot B = carte SD). Le portage **cesse
-  d'imprimer** -- `gc_console_set(FALSE)`, respecte par `gc_log`,
-  `gc_logfile_mark`, `osSyncPrintf` et `rmonPrintf`. Le journal SD n'est pas
-  concerne : il n'est jamais passe par printf.
+- **The geometry.** `CON_Init(fb, 20, 20, rmode->fbWidth, rmode->xfbHeight,
+  ...)` — libogc's canonical arguments — describes a region that overruns the
+  bottom of the framebuffer by twenty lines. The scroll then reads 25 KB *past*
+  the end of the buffer on every line. Subtracting the margins makes that
+  impossible.
+- **Turning it off.** After `gc_gfx_init`, GX owns the screen: the console is
+  write-only noise nobody can read, and on this console there is no USB Gecko
+  either (slot B = SD card). The port **stops printing** — `gc_console_set(FALSE)`,
+  honoured by `gc_log`, `gc_logfile_mark`, `osSyncPrintf` and `rmonPrintf`. The
+  SD log is unaffected: it never went through printf.
 
-`gc_fatal` et le rapport de plantage continuent d'imprimer : ils sont terminaux,
-rares, et l'ecran est le seul endroit ou un utilisateur sans lecteur de carte
-les verra.
+`gc_fatal` and the crash report keep printing: they are terminal, rare, and the
+screen is the only place a user without a card reader will see them.
 
-### `__assert` : le meme nom, trois arguments, l'ordre inverse (2026-09-04)
+### `__assert`: the same name, three arguments, the opposite order (2026-09-04)
 
-Septieme run. Deux resultats, dont une confirmation nette.
+Seventh run. Two results, one of them a clean confirmation.
 
-#### La console eteinte rend la machine a sa vitesse
+#### With the console off, the machine is back at its own speed
 
     clock: 1200 ms since last beat (60 VSyncs)
     clock: 1199 ms since last beat (60 VSyncs)
 
-Soixante retraces valent exactement 1200 ms sur une console 50 Hz. Le run
-precedent en donnait 1659 et 1600. **La console framebuffer coutait bien la
-moitie de la machine.** (Les battements de boot -- ticks 5, 15 et 30 -- ne sont
-pas espaces de 60 VSync, donc leurs valeurs plus courtes sont normales ; c'est
-l'etiquette de la ligne qui est trompeuse pour eux.)
+Sixty retraces are exactly 1200 ms on a 50 Hz console. The previous run gave
+1659 and 1600. **The framebuffer console really was costing half the machine.**
+(The boot beats — ticks 5, 15 and 30 — are not 60 VSyncs apart, so their shorter
+values are normal; it is the line's label that is misleading for them.)
 
-#### Le rapport d'allocation nomme enfin son appelant
+#### The allocation report finally names its caller
 
     cause    mempool_alloc_safe failed: 0 bytes, tag 0x7f7f7fff
     caller   80012cbc   <- addr2line this
     inside   80032ad0
 
-`80012cbc` est **`asset_table_load`**, `80032ad0` est `mempool_alloc_safe`. Donc
-la table d'assets est chargee avec une taille nulle a un moment. Le jeu le
-tolere (voir plus haut), c'est note et ca ne l'arrete plus.
+`80012cbc` is **`asset_table_load`**, `80032ad0` is `mempool_alloc_safe`. So the
+asset table is loaded with a zero size at some point. The game tolerates it (see
+above), it is noted, and it no longer stops it.
 
-#### Et le vrai defaut : deux `__assert` differents portent le meme nom
+#### And the real defect: two different `__assert`s share a name
 
-La pile du plantage :
+The crash stack:
 
 ```
 memcpy <- __console_write <- ... <- alAudioFrame <- __amMain <- thread_trampoline
 ```
 
-Le thread **audio**, dans le `memcpy` de la console. Ce qui imprime, c'est
-`__assert` -- et il y en a deux :
+The **audio** thread, inside the console's `memcpy`. What prints is `__assert`
+— and there are two of them:
 
-| declaration | ordre des arguments |
+| declaration | argument order |
 |---|---|
-| `libultra/src/debug/assert.h` (le decompile) | `(const char *exp, const char *filename, int line)` |
+| `libultra/src/debug/assert.h` (the decompilation) | `(const char *exp, const char *filename, int line)` |
 | `powerpc-eabi/include/assert.h` (newlib) | `(const char *file, int line, const char *failedexpr)` |
 
-Meme nom, trois arguments chacun, **ordre different**. Sans definition propre,
-le portage resolvait les appels du jeu vers la fonction de newlib. Donc
-`__assert("samples >= 0", "env.c", 104)` arrivait avec `file = "samples >= 0"`,
-`line` = l'adresse de `"env.c"` imprimee en decimal, et
-`failedexpr` = **l'entier 104**, que newlib passe a `fiprintf("%s")` : une
-lecture de l'adresse 104. Et apres avoir imprime, l'assert de newlib appelle
-`abort()`.
+Same name, three arguments each, **different order**. With no definition of its
+own, the port resolved the game's calls to newlib's function. So
+`__assert("samples >= 0", "env.c", 104)` arrived with `file = "samples >= 0"`,
+`line` = the address of `"env.c"` printed as decimal, and
+`failedexpr` = **the integer 104**, which newlib passes to `fiprintf("%s")`: a
+read of address 104. And after printing, newlib's assert calls `abort()`.
 
-Trois appels de ce genre existent dans le binaire lie, tous dans
-`libultra/src/audio/env.c` (lignes 107, 109 et 378), et le decompile dit
-lui-meme ce qu'ils sont : « Something must have gone wrong when compiling this
-file, and the asserts got left in ». Ils sont ecrits
-`if (cond) {} else { __assert(...); }` plutot que par le macro, donc `-DNDEBUG`
-ne les supprime pas. `env.c` tourne sur le thread audio, une fois par voix et
-par trame.
+Three such calls exist in the linked binary, all in
+`libultra/src/audio/env.c` (lines 107, 109 and 378), and the decompilation says
+itself what they are: "Something must have gone wrong when compiling this file,
+and the asserts got left in". They are written
+`if (cond) {} else { __assert(...); }` rather than through the macro, so
+`-DNDEBUG` does not remove them. `env.c` runs on the audio thread, once per
+voice per frame.
 
-**Correction :** `platform/gc/gc_assert.c` definit `__assert` avec l'ordre du
-jeu. Il enregistre l'echec dans le journal SD, **une fois par site**, et
-**retourne**. Retourner est delibere, et c'est la deuxieme fois de la journee
-que ce portage doit l'apprendre : rendre fatale une condition que l'original
-tolerait est un changement de comportement, et `dump_memory_to_cpak` qui
-s'arretait sur une allocation de zero octet avait deja coute un run. Une
-assertion « restee la par accident » est un diagnostic, pas un contrat.
+**The fix:** `platform/gc/gc_assert.c` defines `__assert` with the game's order.
+It records the failure in the SD log, **once per site**, and **returns**.
+Returning is deliberate, and it is the second time in one day this port has had
+to learn it: making fatal a condition the original tolerated is a behaviour
+change, and `dump_memory_to_cpak` halting on a zero-byte allocation had already
+cost a run. An assertion "left in by accident" is a diagnostic, not a contract.
 
-Le journal dira laquelle des trois se declenche -- et si c'est le cas, c'est un
-signal direct sur l'audio, parce que les trois portent sur ce que l'envmixer
-recoit.
+The log will say which of the three fires — and if one does, that is a direct
+signal about the audio, because all three are about what the envmixer receives.
 
-#### Et la console, pour de bon
+#### And the console, for good
 
-`gc_console_set(FALSE)` ne fait taire que les `printf` du portage. Il ne peut
-rien contre newlib : un assert, un `fprintf` du jeu, n'importe quoi qui atteint
-`stdout` ou `stderr` finit dans `__console_write`. Apres `gc_gfx_init`, la
-console est donc **repointee sur un tampon prive de 320x32** (20 Ko). Chaque
-ecrivain coute desormais vingt kilo-octets au lieu de sept cents, et plus rien
-n'ecrit dans le framebuffer que GX possede. Un USB Gecko, quand il y en a un,
-recoit toujours le texte complet : libogc l'emet depuis `__console_write` quel
-que soit le tampon.
+`gc_console_set(FALSE)` only silences the port's `printf`s. It can do nothing
+about newlib: an assert, an `fprintf` from the game, anything reaching `stdout`
+or `stderr` ends up in `__console_write`. So after `gc_gfx_init` the console is
+**re-pointed at a private 320x32 buffer** (20 KB). Every writer now costs twenty
+kilobytes instead of seven hundred, and nothing writes into the framebuffer GX
+owns any more. A USB Gecko, where there is one, still receives the full text:
+libogc emits it from `__console_write` whatever the buffer is.
+### An asset does not decompress (2026-09-04, open)
 
-### Un asset ne se decompresse pas (2026-09-04, ouvert)
-
-Huitieme session. Le jeu tourne -- c'est la premiere ou c'est vrai -- et le
-journal contient un signal neuf :
+Eighth session. The game runs — the first one where that is true — and the log
+contains a new signal:
 
 ```
 gzip: inflate -3, 2 of 1256016605 bytes, head dd 4a dd 4a dd 0a
 ```
 
-`-3` est `Z_DATA_ERROR`. `1256016605` est `0x4ADD4ADD`, et la tete affichee est
-`dd 4a dd 4a dd 0a` : **les quatre octets lus comme taille non compressee sont
-le meme motif repete que les donnees**. Autrement dit `compressedInput` ne
-pointe pas sur ce que `gzip_inflate` attend -- il n'y a ni prefixe de taille ni
-flux DEFLATE a cet endroit.
+`-3` is `Z_DATA_ERROR`. `1256016605` is `0x4ADD4ADD`, and the head shown is
+`dd 4a dd 4a dd 0a`: **the four bytes read as the uncompressed size are the same
+repeating pattern as the data**. In other words `compressedInput` is not
+pointing at what `gzip_inflate` expects — there is neither a size prefix nor a
+DEFLATE stream there.
 
-Le second symptome de la meme session va dans le meme sens : le rapport
-d'allocation nomme
+The same session's second symptom points the same way: the allocation report
+names
 
 ```
 cause    mempool_alloc_safe failed: 0 bytes, tag 0x7f7f7fff
 caller   80012dfc     -> asset_table_load
 ```
 
-`asset_table_load` demande **zero octet**, ce qui veut dire que la taille qu'il
-a lue dans la table est nulle. Une table lue de travers et un asset qui n'est
-pas la ou on le croit sont la meme hypothese.
+`asset_table_load` asks for **zero bytes**, which means the size it read from
+the table is zero. A table read wrong and an asset that is not where we think it
+is are the same hypothesis.
 
-**Ce que ce n'est probablement pas :** une decompression cassee en general. Le
-jeu affiche ses textures et son geometrie, `tex asks = hits + converts` est
-propre, et `zlib` a decompresse des centaines d'assets depuis le 2026-08-31. Ce
-qui echoue, c'est un asset particulier, ou un offset particulier.
+**What it probably is not:** decompression broken in general. The game draws its
+textures and its geometry, `tex asks = hits + converts` is clean, and `zlib` has
+decompressed hundreds of assets since 2026-08-31. What fails is one particular
+asset, or one particular offset.
 
-**Instrument ajoute avant toute hypothese** -- le message porte desormais
-l'adresse source et l'appelant :
+**Instrument added before any hypothesis** — the message now carries the source
+address and the caller:
 
 ```c
 gc_log("gzip: inflate %d, %lu of %lu bytes, src %08x, from %08x, head ...")
 ```
 
-`src` se compare directement a l'image d'assets en ARAM (qui *est* la ROM,
-octet pour octet, sans rebasage -- voir « Assets »), et `from` se resout a
-`addr2line`. Avec les deux, la question « quel asset, a quel offset » devient
-arithmetique au lieu de conjecturale.
+`src` compares directly against the asset image in ARAM (which *is* the ROM,
+byte for byte, with no rebasing — see "Assets"), and `from` resolves through
+`addr2line`. With both, "which asset, at what offset" becomes arithmetic instead
+of guesswork.
 
-`aram reads 1095, slow 1022, contended 0` : 93 % des lectures passent par le
-tampon de rebond, ce qui est normal, et aucune collision. Le chemin ARAM n'est
-donc pas en cause a priori -- mais l'adresse le dira.
+`aram reads 1095, slow 1022, contended 0`: 93 % of reads go through the bounce
+buffer, which is normal, and no collisions. So the ARAM path is not a suspect a
+priori — but the address will say.
 
-#### Ce que la neuvième session a établi (2026-09-04, hors console)
+#### What the ninth session established (2026-09-04, off-console)
 
-Le journal du run avec `src` et `from` a donné :
+The run with `src` and `from` gave:
 
 ```
 gzip: inflate -3, 2 of 1256016605 bytes, src 80efcb80, from 80062ad0, head dd 4a dd 4a dd 0a
 ```
 
-`80062ad0` est `object_model_init +408` (vérifié par `nm`, pas seulement par
-`addr2line`) : c'est la ligne
+`80062ad0` is `object_model_init +408` (verified with `nm`, not just
+`addr2line`): it is the line
 
 ```c
 gzip_inflate((u8 *) compressedData, (u8 *) objMdl);   // src/object_models.c
 ```
 
-`80efcb80` tombe bien dans `gMainMemoryPool` (`80daa4a0`..`811aa4a0`).
+`80efcb80` does fall inside `gMainMemoryPool` (`80daa4a0`..`811aa4a0`).
 
-**Quatre faits, tous mesurés hors console contre la ROM elle-même** (elle est
-identique octet pour octet à `dkr.assets` -- `md5 4f0e07f0…` des deux côtés) :
+**Four facts, all measured off-console against the ROM itself** (which is
+identical byte for byte to `dkr.assets` — `md5 4f0e07f0…` on both sides):
 
-1. **Le format du conteneur est juste.** Les 390 modèles d'objets se
-   décompressent **tous** hors ligne avec exactement ce que fait `gc_gzip.c` :
-   taille non compressée en petit-boutien sur 4 octets, en-tête de 5 octets,
-   puis un flux DEFLATE brut. Les longueurs obtenues correspondent au champ de
-   taille pour les 390. `GZIP_HEADER_SIZE 5` est donc confirmé, et le
-   cinquième octet vaut 0x09 partout ; le bloc DEFLATE qui suit est un bloc
-   final à Huffman dynamique dans tous les cas.
-2. **`dd 4a dd 4a dd 0a` n'existe nulle part dans les 12 Mo de la ROM.** Même
-   `dd 4a dd` n'y est pas. Le tampon ne contient donc pas *un autre asset* ni
-   *le bon asset à un mauvais offset* : il ne contient rien qui soit sorti de
-   l'image d'assets.
-3. **La table des modèles d'objets est saine.** 391 entrées puis `0xFFFFFFFF`,
-   aucune entrée de longueur nulle, aucune de longueur négative. Le retour
-   anticipé `if (size == 0)` d'`asset_load` n'est donc pas atteignable par un
-   `modelID` légitime.
-4. **Le `mempool_alloc_safe(0)` du rapport de plantage n'est pas un défaut.**
-   `80012e28` est `asset_table_load +84`, et la table d'assets de la ROM US 1.0
-   contient **trois sections de longueur nulle** : `SCREENS`, `EMPTY_14` et
-   `EMPTY_37`. Le jeu en charge une à chaque démarrage. Voir la section
-   suivante : c'est le rapport qui était en tort, pas le jeu.
+1. **The container format is right.** All 390 object models decompress offline
+   with exactly what `gc_gzip.c` does: a 4-byte little-endian uncompressed size,
+   a 5-byte header, then a raw DEFLATE stream. The lengths obtained match the
+   size field for all 390. `GZIP_HEADER_SIZE 5` is therefore confirmed, and the
+   fifth byte is 0x09 everywhere; the DEFLATE block that follows is a final
+   dynamic-Huffman block in every case.
+2. **`dd 4a dd 4a dd 0a` occurs nowhere in the 12 MB ROM.** Not even
+   `dd 4a dd`. So the buffer holds neither *another asset* nor *the right asset
+   at the wrong offset*: it holds nothing that ever came out of the asset image.
+3. **The object model table is sound.** 391 entries then `0xFFFFFFFF`, no
+   zero-length entry, no negative-length entry. `asset_load`'s `if (size == 0)`
+   early return is therefore unreachable for a legitimate `modelID`.
+4. **The crash report's `mempool_alloc_safe(0)` is not a defect.** `80012e28`
+   is `asset_table_load +84`, and the US 1.0 asset table contains **three
+   zero-length sections**: `SCREENS`, `EMPTY_14` and `EMPTY_37`. The game loads
+   one on every boot. See the next section: it was the report that was wrong,
+   not the game.
 
-Il reste donc trois possibilités, et une seule mesure les sépare : la lecture
-qui devait remplir ce tampon **n'a jamais eu lieu** (ou a atterri ailleurs) ;
-elle a eu lieu et l'ARAM répond correctement maintenant (donc quelque chose a
-écrasé le tampon, ou le cache rend une ligne périmée) ; elle a eu lieu et
-l'ARAM répond la même chose (donc l'image en ARAM est fausse à cet offset).
+So three possibilities remain, and one measurement separates them: the read that
+should have filled that buffer **never happened** (or landed elsewhere); it
+happened and ARAM answers correctly now (so something overwrote the buffer, or
+the cache is handing back a stale line); it happened and ARAM answers the same
+rubbish (so the image in ARAM is wrong at that offset).
 
-**L'instrument qui tranche, ajouté pour le run suivant :**
+**The instrument that settles it, added for the next run:**
 
-- `gc_assets.c` garde un anneau des 32 dernières lectures (offset ROM,
-  destination, longueur, chemin direct ou rebond, numéro d'ordre) et
-  `gc_assets_find_read()` retrouve celle dont la destination couvre une adresse
-  donnée. Quatre mots par lecture, aucune E/S, donc gardé hors `GC_DEBUG`.
-- En cas d'échec, `gzip_inflate` nomme cette lecture **et relit l'ARAM au même
-  offset**, puis imprime les deux :
+- `gc_assets.c` keeps a ring of the last 32 reads (ROM offset, destination,
+  length, direct or bounce path, sequence number) and `gc_assets_find_read()`
+  finds the one whose destination covers a given address. Four words per read,
+  no I/O, so it is kept outside `GC_DEBUG`.
+- On failure, `gzip_inflate` names that read **and re-reads ARAM at the same
+  offset**, then prints both:
 
 ```
 gzip: filled by read #N: rom XXXXXXXX -> YYYYYYYY, L bytes, bounce path; src is +K into it, so rom ZZZZZZZZ
 gzip: aram now says xx xx xx ...
 ```
 
-  ou, si rien n'a rempli ce tampon :
+  or, if nothing filled that buffer:
 
 ```
 gzip: no asset read covers 80efcb80 (N reads served) -- nothing ever filled this buffer
 ```
 
-- `gc_assets_verify()`, au démarrage : relit **toute** l'image depuis l'ARAM et
-  compare son empreinte à celle prise du côté source pendant le téléversement.
-  Une ligne dans le journal, `identical` ou `*** DIFFERENT ***`. Environ 0,4 s
-  une fois au boot. L'hypothèse « l'image en ARAM est fausse » n'a jamais été
-  vérifiée depuis le début du portage ; elle l'est maintenant, avant toute
-  conjecture.
+- `gc_assets_verify()`, at boot: reads the **whole** image back out of ARAM and
+  compares its checksum with one taken from the source side during the upload.
+  One line in the log, `identical` or `*** DIFFERENT ***`. About 0.4 s, once, at
+  boot. The hypothesis "the image in ARAM is wrong" had never been checked since
+  the port began; it is now, before any conjecture.
 
-### `osInvalDCache` jetait les données du voisin (2026-09-04)
+#### Tenth session: ARAM is intact, and the failure did not recur
 
-Trouvé en lisant le chemin d'`asset_load` pour l'asset qui ne se décompresse
-pas. Ce n'est **pas** démontré comme étant sa cause -- c'est un défaut distinct,
-de la même classe que les quatre défauts matériels de la veille (MMU, EXI,
-caches, alignement), et invisible sous Dolphin.
+The run of the build carrying both instruments answered the first half at once:
 
-`dmacopy_internal` (`src/asset_loading.c`, code du jeu, inchangé) commence par :
+```
+aram: image 12582912 bytes from embedded, src sum 4372783d, readback 4372783d -- identical
+```
+
+**The asset image in ARAM is byte-identical to what was uploaded.** That whole
+branch of the hypothesis tree is gone, and with it any suspicion of the ARQ
+upload, of the 64 KB bounce buffer, or of ARAM itself.
+
+And in 36 heartbeats — about 36 seconds of play, through the menus and into a
+race — **no `gzip:` line at all**. The failure did not happen. That is not proof
+that it is fixed: it fired once per session before, and one absence is one
+absence. But the only relevant change between the two builds is
+`osInvalDCache` no longer discarding a neighbour's dirty cache lines (next
+section), which is exactly the shape of defect that would put foreign bytes in a
+freshly filled buffer. **The read ring and the ARAM re-read stay in place until
+a run reproduces it or several runs do not.**
+
+### `osInvalDCache` was throwing away the neighbour's data (2026-09-04)
+
+Found by reading `asset_load`'s path for the asset that does not decompress. It
+is **not** proven to be its cause — it is a separate defect, of the same class
+as the previous day's four hardware ones (MMU, EXI, caches, alignment), and
+invisible under Dolphin.
+
+`dmacopy_internal` (`src/asset_loading.c`, game code, unchanged) starts with:
 
 ```c
 osInvalDCache((u32 *) ramAddress, numBytes);
 ```
 
-Les deux arguments n'obéissent à **aucune** règle d'alignement :
-`object_model_init` lui passe `objMdl + modelSize - compressedSize` et un
-nombre d'octets lu tel quel dans la table des assets. Sur MIPS c'était gratuit :
-la plage était arrondie aux lignes de cache et le jeu était seul propriétaire
-de la mémoire.
+Neither argument obeys **any** alignment rule: `object_model_init` hands it
+`objMdl + modelSize - compressedSize` and a byte count read straight out of the
+asset table. On MIPS that was free: the range was rounded to cache lines and the
+game owned all of memory.
 
-Ici, non. Le portage traduisait cet appel en `DCInvalidateRange`, c'est-à-dire
-`dcbi`, qui **jette une ligne de 32 octets sans la réécrire**. Les deux lignes
-aux extrémités d'une plage non alignée sont partagées avec ce que l'allocateur
-a distribué de part et d'autre : jusqu'à 31 octets d'un voisin vivant et
-récemment écrit repartaient silencieusement à ce que la mémoire principale
-contenait avant. À chaque chargement d'asset. Sans aucune trace.
+Here it is not. The port translated that call to `DCInvalidateRange`, that is
+`dcbi`, which **discards a 32-byte line without writing it back**. The two lines
+at the ends of an unaligned range are shared with whatever the allocator handed
+out on either side: up to 31 bytes of a live, recently written neighbour
+silently reverted to whatever main memory held before. On every asset load. With
+no trace at all.
 
-`platform/gc/ultra/os_cache.c` écrit maintenant les deux lignes partielles en
-mémoire (`dcbf` réécrit *et* invalide, ce qui est correct pour les deux
-propriétaires) et n'invalide que les lignes que la plage possède entièrement.
+`platform/gc/ultra/os_cache.c` now writes the two partial lines back (`dcbf`
+writes back *and* invalidates, which is correct for both owners) and only
+discards the lines the range owns outright.
 
-Le chemin rapide de `gc_assets_read` garde `DCInvalidateRange` : là, l'offset,
-la destination et la longueur sont tous alignés sur 32 par construction, donc
-aucune ligne n'est partagée et l'invalidation est exactement la bonne opération.
+`gc_assets_read`'s fast path keeps `DCInvalidateRange`: there the offset, the
+destination and the length are all 32-byte aligned by construction, so no line
+is shared and invalidation is exactly the right operation.
 
-**La leçon, la même que celle du canal de debug :** demander ce qu'une
-opération *touche*, pas seulement ce qu'elle fait. `dcbi` ne fait pas ce que le
-nom de l'appel libultra laisse croire — il ne « rafraîchit » pas une plage, il
-détruit ce qu'il recouvre.
+**The lesson, the same one as the debug channel's:** ask what an operation
+*touches*, not only what it does. `dcbi` does not do what the libultra call's
+name suggests — it does not "refresh" a range, it destroys what it covers.
 
-### Le rapport d'allocation nulle mangeait le seul rapport disponible (2026-09-04)
+### The zero-allocation report was eating the only report there was (2026-09-04)
 
-`dump_memory_to_cpak` était appelé dans deux cas très différents et les
-traitait pareil :
+`dump_memory_to_cpak` was called in two very different cases and treated them
+the same:
 
 ```c
 void *mempool_alloc_safe(s32 size, u32 colourTag) {   // src/memory.c
-    if (size == 0) dump_memory_to_cpak(...);          // toléré
+    if (size == 0) dump_memory_to_cpak(...);          // tolerated
     addr = mempool_slot_find(POOL_MAIN, size, colourTag);
-    if (addr == NULL) dump_memory_to_cpak(...);       // vraie panne
+    if (addr == NULL) dump_memory_to_cpak(...);       // a real failure
     return addr;
 }
 ```
 
-Le premier cas se produit **à chaque démarrage** : la ROM US 1.0 a trois
-sections d'assets de longueur nulle et `asset_table_load` en charge une. Il
-écrivait donc le rapport binaire complet sur la carte, ce qui affichait une
-page `CRASH` au démarrage suivant pour une condition que le jeu tolère — et,
-bien pire, il verrouillait `sReported`, donc **une vraie pénurie de mémoire
-plus loin dans le run n'aurait rien écrit du tout**. L'instrument se
-consommait lui-même sur un faux positif garanti.
+The first case happens **on every boot**: the US 1.0 ROM has three zero-length
+asset sections and `asset_table_load` loads one. So it was writing the full
+binary record to the card, which put a `CRASH` page on screen at the next boot
+for a condition the game tolerates — and, far worse, it latched `sReported`, so
+**a genuine out-of-memory later in the run would have written nothing at all**.
+The instrument consumed itself on a guaranteed false positive.
 
-Le cas `size == 0` est maintenant séparé : une ligne dans le journal, une seule
-fois, avec l'appelant, et rien sur la carte. Le rapport complet et la page
-d'écran restent pour ce qu'ils décrivent — `mempool_slot_find` qui rend NULL.
+The `size == 0` case is now separated out: one line in the log, once, with the
+caller, and nothing on the card. The full report and the on-screen page stay for
+what they describe — `mempool_slot_find` returning NULL.
 
-C'est le troisième piège d'instrumentation de ce portage, après la console
-framebuffer qui coûtait la moitié de la machine et le journal qui corrompait la
-carte SD. **Un instrument qui se déclenche à coup sûr sur une condition normale
-n'est pas un instrument.**
+This is the port's third instrumentation trap, after the framebuffer console
+that cost half the machine and the log that corrupted the SD card. **An
+instrument that is certain to fire on a normal condition is not an instrument.**
 
-### Le gestionnaire de plantage, porte (2026-09-04)
+### The crash handler, ported (2026-09-04)
 
-`platform/gc/gc_crash.c`. DKR en avait un : `src/thread0_epc.c` fait tourner un
-thread de priorite 0 en attente de `OS_EVENT_FAULT`, ecrit le contexte du
-thread fautif dans un fichier « CORE » sur le Controller Pak, et boucle. Au
-**boot suivant**, `get_lockup_status` retrouve ce fichier, le relit, l'efface,
-et `thread3_main` affiche le vidage de registres en quatre pages.
+`platform/gc/gc_crash.c`. DKR had one: `src/thread0_epc.c` runs a
+priority-0 thread waiting on `OS_EVENT_FAULT`, writes the faulting thread's
+context to a "CORE" file on the Controller Pak, and loops. At the **next boot**,
+`get_lockup_status` finds that file, reads it back, deletes it, and
+`thread3_main` shows the register dump in four pages.
 
-La forme est bonne et elle est conservee. Trois substitutions font tout le
-travail :
+The shape is right and it is kept. Three substitutions do all the work:
 
-| N64 | portage |
+| N64 | port |
 |---|---|
-| vecteurs d'exception MIPS | les vecteurs PowerPC que libogc installe deja |
-| `OS_EVENT_FAULT` | `c_default_exceptionhandler`, intercepte a l'edition de liens |
-| le Controller Pak | la carte SD : rapport lisible dans `dkr.log`, enregistrement binaire dans `dkr.crash` |
+| MIPS exception vectors | the PowerPC vectors libogc already installs |
+| `OS_EVENT_FAULT` | `c_default_exceptionhandler`, intercepted at link time |
+| the Controller Pak | the SD card: a readable report in `dkr.log`, a binary record in `dkr.crash` |
 
-**Comment l'interception fonctionne, et pourquoi pas autrement.** libogc recopie
-un stub sur chaque vecteur d'exception, et ce stub finit par `mtsrr0 ; rfi` vers
-l'adresse trouvee dans `_exceptionhandlertable`. Les entrees de cette table sont
-donc des **routines de vecteur brutes**, pas des fonctions C : enregistrer une
-fonction C via `__exception_sethandler` y sauterait sans aucune trame sauvee.
-C'est le desassemblage de `exception.o` qui a tranche, et ce n'est pas ce que
-raconte l'extrait qui circule dans le homebrew.
+**How the interception works, and why not otherwise.** libogc copies a stub onto
+every exception vector, and that stub ends with `mtsrr0 ; rfi` to the address
+found in `_exceptionhandlertable`. So that table's entries are **raw vector
+routines**, not C functions: registering a C function through
+`__exception_sethandler` would jump there with no frame saved at all.
+Disassembling `exception.o` settled it, and it is not what the snippet that
+circulates in homebrew says.
 
-Le crochet se place donc un niveau au-dessus. La routine de vecteur de libogc,
-`default_exceptionhandler`, sauve la `frame_context` complete puis fait **un
-appel C ordinaire** a `c_default_exceptionhandler`, depuis un autre fichier
-objet. `-Wl,--wrap=c_default_exceptionhandler` intercepte exactement cela :
-`__wrap_...` ecrit le rapport puis passe la trame a `__real_...`, donc le vidage
-ecran de libogc a lieu aussi. Rien n'est reimplemente, rien n'est patche a
-l'execution.
+So the hook goes one level up. libogc's vector routine,
+`default_exceptionhandler`, saves the full `frame_context` and then makes **an
+ordinary C call** to `c_default_exceptionhandler`, from another object file.
+`-Wl,--wrap=c_default_exceptionhandler` intercepts exactly that: `__wrap_...`
+writes the report and then passes the frame to `__real_...`, so libogc's
+on-screen dump happens too. Nothing is reimplemented, nothing is patched at
+runtime.
 
-Ce que le rapport contient : l'exception nommee, `srr0`/`srr1`/`dsisr`/`dar`,
-`lr`/`ctr`/`cr`/`xer`, les 32 GPR, la pile brute filtree sur ce qui ressemble a
-une adresse de retour (a passer a `powerpc-eabi-addr2line -e build/gc/dkr.elf`),
-et **`gObjectStackTrace`** — quel objet le jeu etait en train de creer, mettre a
-jour ou dessiner. Ce dernier point est la seule information de niveau jeu qu'un
-vidage de registres possede, et le talon precedent l'enregistrait dans le vide.
+What the report contains: the exception by name, `srr0`/`srr1`/`dsisr`/`dar`,
+`lr`/`ctr`/`cr`/`xer`, the 32 GPRs, the raw stack filtered down to what looks
+like a return address (to be fed to `powerpc-eabi-addr2line -e
+build/gc/dkr.elf`), and **`gObjectStackTrace`** — which object the game was
+creating, updating or drawing. That last one is the only game-level information
+a register dump has, and the previous stub was recording it into the void.
 
-Les sept points d'entree que le jeu appelle encore sont maintenant reels :
-`update_object_stack_trace` (neuf sites dans `objects.c`), `stack_pointer` (r1),
-`thread3_verify_stack` (la sentinelle de pile du portage, signalee une fois),
-`dump_memory_to_cpak` (echec d'allocation : rapport nomme au lieu d'un plantage
-mysterieux), `get_lockup_status`, `mode_lockup`, `render_epc_lock_up_display`.
+The seven entry points the game still calls are real now:
+`update_object_stack_trace` (nine sites in `objects.c`), `stack_pointer` (r1),
+`thread3_verify_stack` (the port's stack sentinel, reported once),
+`dump_memory_to_cpak` (allocation failure: a named report instead of a
+mysterious crash), `get_lockup_status`, `mode_lockup`,
+`render_epc_lock_up_display`.
 
-### Le Controller Pak et la carte memoire (2026-09-04)
+### The Controller Pak and the memory card (2026-09-04)
 
-`platform/gc/ultra/os_pfs.c` et `platform/gc/gc_storage.c`. Les douze `osPfs*`
-renvoyaient `PFS_ERR_NOPACK` ; le jeu tournait mais ne proposait jamais
-d'enregistrer un fantome.
+`platform/gc/ultra/os_pfs.c` and `platform/gc/gc_storage.c`. The twelve `osPfs*`
+entry points returned `PFS_ERR_NOPACK`; the game ran but never offered to save a
+ghost.
 
-**L'API est emulee, pas le support.** Rien hors de libultra ne lit la table
-d'inodes d'un pak : `save_data.c` ne touche qu'un seul champ d'`OSPfs`
-(`status & PFS_INITIALIZED`, ligne 1184) et passe par les douze appels pour tout
-le reste. L'implementation est donc un repertoire et un allocateur de pages. La
-comptabilite des pages est exacte (123 pages de 256 octets), parce que le jeu
-montre a l'utilisateur combien il reste et refuse un fantome qui ne tient pas.
+**The API is emulated, not the medium.** Nothing outside libultra reads a pak's
+inode table: `save_data.c` touches exactly one field of `OSPfs`
+(`status & PFS_INITIALIZED`, line 1184) and goes through the twelve calls for
+everything else. So the implementation is a directory and a page allocator. The
+page accounting is exact (123 pages of 256 bytes), because the game shows the
+user how many are left and refuses a ghost that does not fit.
 
-**Le pak est un seul blob, pas seize fichiers de carte.** Une carte memoire
-GameCube alloue par blocs de 8 Ko ; seize fantomes de quelques kilo-octets
-prendraient 128 Ko et seize entrees de repertoire pour un seul jeu. L'image de
-32 Ko part donc en un unique fichier de sauvegarde.
+**The pak is a single blob, not sixteen card files.** A GameCube memory card
+allocates in 8 KB blocks; sixteen ghosts of a few kilobytes each would take
+128 KB and sixteen directory entries for one game. So the 32 KB image goes out
+as a single save file.
 
-`gc_storage.c` est la porte commune : un blob nomme, sur carte memoire (les deux
-slots) s'il y en a une, sur carte SD sinon. **L'EEPROM y passe aussi** — ce que
-la section « Reste a faire » annoncait, et c'etait exact : seuls `save_load` et
-`save_store` ont change, quatre lignes chacun.
+`gc_storage.c` is the common door: a named blob, on a memory card (either slot)
+if there is one, on the SD card otherwise. **The EEPROM goes through it too** —
+which is what the "Left to do" section predicted, and it was right: only
+`save_load` and `save_store` changed, four lines each.
 
-`gc_storage_present()` (la reponse a `osPfsIsPlug`) est mise en cache une
-seconde : `save_data.c` la demande au fil des menus, et un `CARD_ProbeEx` sur les
-deux slots par image mettrait une transaction EXI dans le temps de trame pour
-aucune information nouvelle.
+`gc_storage_present()` (the answer to `osPfsIsPlug`) is cached for a second:
+`save_data.c` asks for it throughout the menus, and a `CARD_ProbeEx` on both
+slots per frame would put an EXI transaction in the frame time for no new
+information.
 
-**`CARD_ProbeEx`, pas `CARD_Probe`.** libogc definit `CARD_Probe` comme un
-simple branchement vers `EXI_Probe` — verifie en desassemblant `card.o` — donc
-il repond « un peripherique EXI est attache », ce qui sur le materiel de
-l'utilisateur est tres probablement un SD Gecko en slot B et non une carte
-memoire. `CARD_ProbeEx` lit l'identite du peripherique et renvoie
-`CARD_ERROR_WRONGDEVICE` pour tout ce qui n'est pas une carte. Se tromper la
-n'aurait pas perdu de donnees — le repli SD aurait rattrape l'ecriture — mais
-`osPfsIsPlug` repond au jeu avec cette valeur, et annoncer un Controller Pak
-parce qu'un *lecteur* de cartes est branche est exactement le genre de
-quasi-succes qu'on ne diagnostique plus ensuite.
+**`CARD_ProbeEx`, not `CARD_Probe`.** libogc defines `CARD_Probe` as a plain
+branch to `EXI_Probe` — checked by disassembling `card.o` — so it answers "an
+EXI device is attached", which on the user's hardware is very likely an SD Gecko
+in slot B and not a memory card. `CARD_ProbeEx` reads the device identity and
+returns `CARD_ERROR_WRONGDEVICE` for anything that is not a card. Getting that
+wrong would not have lost data — the SD fallback would have caught the write —
+but `osPfsIsPlug` answers the game with that value, and announcing a Controller
+Pak because a card *reader* is plugged in is exactly the kind of near-success
+that never gets diagnosed afterwards.
+### Instrumentation added on 2026-09-02
 
-### Instrumentation ajoutee le 2026-09-02
+- **`cover`** — the widest primitive in the frame, in thousandths of the
+  screen, whatever space it came from: a hardware triangle, a CPU-fallback
+  triangle, a texrect and a fill are all comparable. With its rank in the list,
+  its combiner, its render mode, its texture and the PRIM/ENV colours. Ties go
+  to the later primitive, because what is on top is what was drawn last. It is
+  what named the rectangle above in a single run.
+- **`tex magenta`** — how many textures went through the two paths that paint
+  magenta (a format with no case, a missing palette). `unhandled 0, no tlut 0`
+  eliminated the whole "texture" line of enquiry for the magenta screen, in one
+  line.
+- **`ignored:`** — the census of opcodes the walker drops. See "The progress
+  measurement" above.
 
-- **`cover`** -- la primitive la plus large de la frame, en pour-mille d'ecran,
-  quel que soit son espace d'origine : triangle materiel, triangle du repli
-  CPU, texrect ou fill sont comparables. Avec son rang dans la liste, son
-  combineur, son mode de rendu, sa texture et les couleurs PRIM/ENV. Les
-  egalites vont a la primitive la plus tardive, parce que ce qui est au-dessus
-  est ce qui a ete dessine en dernier. C'est elle qui a nomme le rectangle
-  ci-dessus en une execution.
-- **`tex magenta`** -- combien de textures sont passees par les deux chemins
-  qui peignent du magenta (format sans cas, palette absente). `unhandled 0,
-  no tlut 0` a elimine toute la piste « texture » pour l'ecran magenta, en une
-  ligne.
-- **`ignored:`** -- le recensement des opcodes que le walker jette. Voir
-  « La mesure d'avancement » plus haut.
+### Fixes of 2026-09-01
 
-### Corrections du 2026-09-01
+In the order of what they returned.
 
-Dans l'ordre de ce qu'elles ont rapporte.
+**1. The sign of back-face culling was inverted, on both paths.** The port was
+rejecting front faces and keeping back faces. `GC_NO_CULL=1` gave the sky its
+clouds back, the horizon its tree line, and stopped the terrain from being a
+flat brown wedge — all that geometry was being thrown away.
 
-**1. Le signe du back-face culling etait inverse, sur les deux chemins.** Le
-port rejetait les faces avant et gardait les faces arriere. `GC_NO_CULL=1` a
-fait gagner ses nuages au ciel, sa ligne d'arbres a l'horizon et a fait cesser
-au terrain d'etre un coin brun plat -- toute cette geometrie etait jetee.
+The two paths were consistent **with each other** and both wrong, which is why
+comparing them proved nothing: the software path measures the area in screen
+space (y down) and rejected `area <= 0`; the hardware path measures it in NDC
+(y up) and rejected `area >= 0`. A y flip negates a signed area, so those
+opposite comparisons are the same rule written twice. Measured: `tris in 923 ->
+cull 267, out 656` became `tris in 1143 -> cull 280, out 863`.
 
-Les deux chemins etaient coherents **entre eux** et tous deux faux, ce qui est
-la raison pour laquelle les comparer ne prouvait rien : le chemin logiciel
-mesure l'aire en espace ecran (y vers le bas) et rejetait `area <= 0` ; le
-chemin materiel la mesure en NDC (y vers le haut) et rejetait `area >= 0`. Une
-symetrie en y nie une aire signee, donc ces comparaisons opposees sont la meme
-regle ecrite deux fois. Mesure : `tris in 923 -> cull 267, out 656` est devenu
-`tris in 1143 -> cull 280, out 863`.
+**2. The texture cache was trampling itself.** `tex asks 243 = hits 153 +
+converts 90` against `TEX_CACHE_SIZE 64`, evicted round-robin: at least 26
+slots were being reused **twice in the same frame**. Every miss did a `free()`
++ `memalign()` + rewrite while the CPU runs ahead of the GP through the FIFO —
+so buffers were freed and rewritten while the GP was still reading them. Cache
+at 256 entries, buffers kept when they are already big enough (a `capacity`
+field): `tex asks 286 = hits 286 + converts 0 | held 805 KB`.
 
-**2. Le cache de textures se pietinait.** `tex asks 243 = hits 153 +
-converts 90` contre `TEX_CACHE_SIZE 64`, evince en tourniquet : au moins 26
-emplacements etaient reutilises **deux fois dans la meme frame**. Chaque
-manque faisait `free()` + `memalign()` + reecriture pendant que le CPU court
-devant le GP a travers le FIFO -- donc des tampons liberes et reecrits pendant
-que le GP les lisait encore. Cache a 256 entrees, tampons conserves quand ils
-sont deja assez grands (champ `capacity`) : `tex asks 286 = hits 286 +
-converts 0 | held 805 KB`.
+**3. `load_3d_projection` returned FALSE without loading a projection.** The
+CPU fallback then submitted screen coordinates while the GP still held the
+previous batch's **perspective** matrix. That is the "big flat wedge of colour"
+we had been chasing from the start. It calls `load_2d_projection()` now.
 
-**3. `load_3d_projection` renvoyait FALSE sans charger de projection.** Le
-repli CPU soumettait alors des coordonnees ecran pendant que le GP tenait
-encore la matrice **perspective** du lot precedent. C'est le « grand aplat de
-couleur » poursuivi depuis le debut. Il appelle desormais `load_2d_projection()`.
+**4. `GX_InvalidateTexAll()` was called nowhere.** `DCFlushRange` pushes the
+CPU's copy out; nothing was invalidating the GP's own texture cache. Called
+after every conversion and, with `GX_InvVtxCache()`, per list.
+(`ref-sm64gc/src/pc/gfx/gfx_gx.c:1809` does it every frame.)
 
-**4. `GX_InvalidateTexAll()` n'etait appele nulle part.** `DCFlushRange` pousse
-la copie du CPU dehors ; rien n'invalidait le cache de textures du GP lui-meme.
-Appele apres chaque conversion et, avec `GX_InvVtxCache()`, par liste.
-(`ref-sm64gc/src/pc/gfx/gfx_gx.c:1809` le fait a chaque frame.)
+**5. `G_SETCOMBINE` -> TEV, with the render mode and the constant colours.** A
+generic decode of the mux's sixteen fields rather than a table of the seventeen
+`G_CC_*` modes — checked against real words taken off the machine:
+`cc fc127eac f00ff23f` decodes to `G_CC_MODULATEIDECALA` +
+`G_CC_BLENDI_ENV_ALPHA_PRIM2`, exactly the pair in `src/textures_sprites.c`.
+Four TEV shapes cover every combiner DKR uses. PRIM and ENV live in
+`GX_TEVREG0/1` because a stage can read several registers but only one konst; a
+two-cycle combiner parks the cycle-1 result in `GX_TEVREG2` so that `COMBINED`
+is not overwritten by the second cycle's stages.
 
-**5. `G_SETCOMBINE` -> TEV, avec le mode de rendu et les couleurs constantes.**
-Decodage generique des seize champs du mux plutot qu'une table des dix-sept
-modes `G_CC_*` -- verifie contre des mots reels releves sur la machine :
-`cc fc127eac f00ff23f` se decode en `G_CC_MODULATEIDECALA` +
-`G_CC_BLENDI_ENV_ALPHA_PRIM2`, exactement la paire de `src/textures_sprites.c`.
-Quatre formes de TEV couvrent tous les combineurs de DKR. PRIM et ENV vivent
-dans `GX_TEVREG0/1` parce qu'un etage peut lire plusieurs registres mais une
-seule konst ; un combineur deux-cycles gare le resultat du cycle 1 dans
-`GX_TEVREG2` pour que `COMBINED` ne soit pas ecrase par les etages du second.
+**`G_RDPSETOTHERMODE` (0xEF) is how DKR sets its render state**, not
+`G_SETOTHERMODE_H/_L`: every draw-table entry is a `gsDPSetCombineLERP`
+followed by a `gsDPSetOtherMode` (`src/textures_sprites.h`). The port had no
+case for 0xEF, so the cycle type, the texture filter and the whole render mode
+were never read. In two cycles it is the **second** cycle's muxes that write to
+memory — DKR pairs `G_RM_FOG_SHADE_A` in cycle 1 with the real mode in cycle 2
+throughout its tables.
 
-**`G_RDPSETOTHERMODE` (0xEF) est la façon dont DKR pose son etat de rendu**, et
-non `G_SETOTHERMODE_H/_L` : chaque entree de table de dessin est un
-`gsDPSetCombineLERP` suivi d'un `gsDPSetOtherMode` (`src/textures_sprites.h`).
-Le port n'avait aucun cas pour 0xEF, donc le type de cycle, le filtre de
-texture et tout le mode de rendu n'etaient jamais lus. En deux cycles ce sont
-les muxes du **second** cycle qui ecrivent en memoire -- DKR appaire
-`G_RM_FOG_SHADE_A` en cycle 1 avec le vrai mode en cycle 2 dans toutes ses
-tables.
+**6. Address resolution: no splitting on the top byte.** `set_rsp_segment.h`
+says bluntly "they don't use segments for assets", and `thread3_main.c:258`
+sets segment 0 to `K0BASE`. The RSP's `table[addr >> 24] + (addr & 0xFFFFFF)`
+is lossless on the N64 because RDRAM is 4 MB; here the assets are in `.rodata`,
+`gMainMemoryPool` links at `0x80d87800` and runs to `0x81187800` — 25 physical
+bits. Anything past `0x81000000` (38 % of the pool) was read as segment 1 with
+bit 24 lost. Now `sSegments[0] + addr`, full width.
 
-**6. Resolution d'adresse : pas de decoupage par octet de poids fort.**
-`set_rsp_segment.h` dit sans detour « they don't use segments for assets », et
-`thread3_main.c:258` met le segment 0 a `K0BASE`. Le `table[addr >> 24] +
-(addr & 0xFFFFFF)` du RSP est sans perte sur N64 parce que la RDRAM fait 4 Mo ;
-ici les assets sont en `.rodata`, `gMainMemoryPool` est lie a `0x80d87800` et
-court jusqu'a `0x81187800` -- 25 bits physiques. Tout ce qui depassait
-`0x81000000` (38 % du pool) etait lu comme segment 1 avec le bit 24 perdu.
-Desormais `sSegments[0] + addr`, pleine largeur.
+**7. The texture pipeline, entirely deduced from the game's code.** The source
+stride is the tile's `line * 8`, not `width * bpp` (the load macros align rows
+to eight bytes; `width * bpp` shears any 4-bit texture whose width is not a
+multiple of 16); 32-bit is the exception to `width * 4` because its
+`LINE_BYTES` is 2. Loads are recorded against their **TMEM address** and a tile
+finds its texels through its own — the idiom loads through tile 7 and draws
+through tile 0. CI4/CI8 through a TLUT, and **the palette does not arrive as
+`G_LOADTLUT`**: `gbi.h:3360` redefines `gDPLoadTLUT_pal16` as an ordinary
+`G_LOADBLOCK` to `tmem = 256 + pal*16`. `uls`/`ult`, `shifts`/`shiftt` and
+`G_TEXTURE`'s S/T scale now reach the coordinates.
 
-**7. Pipeline de textures, entierement deduit du code du jeu.** Le pas de la
-source est le `line * 8` de la tuile, pas `width * bpp` (les macros de
-chargement alignent les lignes sur huit octets ; `width * bpp` cisaille toute
-texture 4 bits dont la largeur n'est pas multiple de 16) ; le 32 bits est
-l'exception a `width * 4` parce que son `LINE_BYTES` vaut 2. Les chargements
-sont enregistres contre leur **adresse TMEM** et une tuile trouve ses texels
-par la sienne -- l'idiome charge par la tuile 7 et dessine par la tuile 0.
-CI4/CI8 a travers une TLUT, et **la palette n'arrive pas en `G_LOADTLUT`** :
-`gbi.h:3360` redefinit `gDPLoadTLUT_pal16` en un `G_LOADBLOCK` ordinaire vers
-`tmem = 256 + pal*16`. `uls`/`ult`, `shifts`/`shiftt` et l'echelle S/T de
-`G_TEXTURE` atteignent maintenant les coordonnees.
+The odd-row word swap for 32-bit is implemented (to be applied exactly when the
+block load's `dxt` is 0) — **but it never fires in practice**: every measured
+load has `dxt != 0`, `swap0`. Do not go back to it.
 
-L'echange de mots des lignes impaires en 32 bits est implemente (a appliquer
-exactement quand le `dxt` du chargement par bloc vaut 0) -- **mais il ne se
-declenche jamais en pratique** : tout chargement mesure a `dxt != 0`, `swap0`.
-Ne pas y revenir.
+**8. `G_VTX_APPEND` started from the wrong base.** f3ddkr.h: a load with the
+flag set is "appended after those written **with flag 0**" — after the count of
+the last non-appending load, not after the running total. The sprite builder
+appends in groups of five quads and resets its own index between groups
+(`textures_sprites.c:1399`), so each group has to fall back to index 1 over the
+previous one; accumulating put the second group at 21 while its triangles still
+referenced 1..20. Every sprite of more than five tiles was wrong. Measured: a
+batch's screen box went from `(7883,568)-(9365,767)` to `(86,46)-(184,58)`.
 
-**8. `G_VTX_APPEND` partait de la mauvaise base.** f3ddkr.h : un chargement
-avec le drapeau pose est « appended after those written **with flag 0** » --
-apres le compte du dernier chargement non-appendant, pas apres le cumul
-courant. Le constructeur de sprites appende par groupes de cinq quads et remet
-son propre index a zero entre les groupes (`textures_sprites.c:1399`), donc
-chaque groupe doit retomber a l'indice 1 par-dessus le precedent ; cumuler
-mettait le second groupe a 21 alors que ses triangles referencaient encore
-1..20. Tout sprite de plus de cinq tuiles etait faux. Mesure : la boite ecran
-d'un lot est passee de `(7883,568)-(9365,767)` a `(86,46)-(184,58)`.
+**9. The CPU fallback's depth convention was inverted.** The hardware path puts
+the near plane at -1 and the far plane at 0 (GX's own range); `project_corner`
+was sending `ndc * 0.5 + 0.5`, and `gfx_ortho` with n = -1, f = 0 gives
+`mt[2][2] = -1`: the composed depth was 0 at the near plane and -1 at the far
+one, the same range read backwards. Under `GX_LEQUAL` a distant sprite got the
+nearest possible depth and came in front of everything. Every sprite goes
+through that path, hence sprites — and only sprites — in front of the
+character. Now `0.5 - ndc * 0.5`, and the decal bias changes sign with it.
 
-**9. La convention de profondeur du repli CPU etait inversee.** Le chemin
-materiel met le plan proche a -1 et le plan lointain a 0 (la plage propre a
-GX) ; `project_corner` envoyait `ndc * 0.5 + 0.5`, et `gfx_ortho` avec n = -1,
-f = 0 donne `mt[2][2] = -1` : la profondeur composee valait 0 au plan proche et
--1 au lointain, la meme plage lue a l'envers. Sous `GX_LEQUAL` un sprite
-lointain recevait la profondeur la plus proche qui soit et passait devant tout.
-Tous les sprites passent par ce chemin, d'ou des sprites -- et seulement eux --
-devant le personnage. Desormais `0.5 - ndc * 0.5`, et le biais de decal change
-de signe avec.
+### Textures: addressing modes, filtering, edges (2026-08-31)
 
-### Textures : modes d'adressage, filtrage, bord (2026-08-31)
+The tile descriptor was only half read. `G_SETTILE` kept only `fmt` and `siz`
+and threw away `cms`/`cmt`, `masks`/`maskt`, `shifts`/`shiftt`, and
+`texture_get` hard-coded `GX_CLAMP, GX_CLAMP` and `GX_NEAR, GX_NEAR`.
 
-Le descripteur de tuile n'etait lu qu'a moitie. `G_SETTILE` ne gardait que
-`fmt` et `siz` et jetait `cms`/`cmt`, `masks`/`maskt`, `shifts`/`shiftt`, et
-`texture_get` codait en dur `GX_CLAMP, GX_CLAMP` et `GX_NEAR, GX_NEAR`.
+Three consequences, all visible:
 
-Trois consequences, toutes visibles :
+1. **Everything was clamped.** Measuring the `(cmt<<2)|cms` mask over a frame:
+   `0x401` and `0x005`, i.e. bits 0, 2 and 10 — **WRAP/WRAP** (the majority
+   case), CLAMP/CLAMP and CLAMP/WRAP. So every repeated surface (road, water,
+   walls) showed a stretched edge column instead of repeating.
+2. **Nothing was filtered.** DKR explicitly asks for
+   `gsDPSetTextureFilter(G_TF_BILERP)` in `rcp_dkr.c`, `menu.c`, `printf.c`,
+   `weather.c` and `fade_transition.c`. `G_SETOTHERMODE_H` was ignored
+   wholesale; the port now follows the register (shift in bits 8..15 of w0,
+   length in 0..7, `w1` already in place) and reads `G_MDSFT_TEXTFILT`.
+3. **The edge padding was transparent black.** GX stores RGBA8 in 4x4 blocks,
+   so a texture whose size is not a multiple of 4 has texels beyond its edge.
+   They were zero; under bilinear that pulls a dark fringe into the last row and
+   the last column. The edge is replicated now — `ref-sm64gc`'s swizzle carries
+   the same note.
 
-1. **Tout etait borne.** Mesure du masque `(cmt<<2)|cms` sur une frame :
-   `0x401` et `0x005`, soit les bits 0, 2 et 10 -- **WRAP/WRAP** (le cas
-   majoritaire), CLAMP/CLAMP et CLAMP/WRAP. Chaque surface repetee (route, eau,
-   parois) montrait donc une colonne de bord etiree au lieu de se repeter.
-2. **Rien n'etait filtre.** DKR demande explicitement
-   `gsDPSetTextureFilter(G_TF_BILERP)` dans `rcp_dkr.c`, `menu.c`, `printf.c`,
-   `weather.c` et `fade_transition.c`. `G_SETOTHERMODE_H` etait ignore en bloc ;
-   le port suit maintenant le registre (decalage en bits 8..15 de w0, longueur
-   en 0..7, `w1` deja en place) et lit `G_MDSFT_TEXTFILT`.
-3. **Le remplissage de bord etait du noir transparent.** GX range le RGBA8 en
-   blocs de 4x4, donc une texture dont la taille n'est pas multiple de 4 a des
-   texels au-dela de son bord. Ils etaient a zero ; en bilineaire, ca tire un
-   liseré sombre dans la derniere ligne et la derniere colonne. Le bord est
-   desormais replique -- le swizzle de `ref-sm64gc` porte la meme note.
+The texture cache now carries the sampling state in its key, and on a hit with
+different modes it redescribes the GX object in place rather than reconverting
+the same texels.
 
-Le cache de textures porte maintenant l'etat d'echantillonnage dans sa cle, et
-sur un succes avec des modes differents il redecrit l'objet GX en place plutot
-que de reconvertir les memes texels.
+The clamp/mirror/wrap table, taken from `gfx_gx_cm_to_gx`: clamp wins over
+mirror, else mirror, else repeat.
 
-Table clamp/mirror/wrap, reprise de `gfx_gx_cm_to_gx` : le clamp l'emporte sur
-le mirror, sinon mirror, sinon repeat.
+### THE root cause (2026-08-31): signed/unsigned in `load_matrix`
 
-### LA cause racine (2026-08-31) : signed/unsigned dans `load_matrix`
-
-Une ligne. Le decodage virgule fixe des matrices faisait :
+One line. The fixed-point matrix decode did:
 
 ```c
 s32 whole = (s16) src[i * 4 + j];
 u32 frac  = src[16 + i * 4 + j];
-dst[i][j] = (f32) ((whole << 16) | frac) / 65536.0f;   /* faux */
+dst[i][j] = (f32) ((whole << 16) | frac) / 65536.0f;   /* wrong */
 ```
 
-`frac` est **non signe**, donc C convertit les deux operandes vers le type
-commun -- `unsigned int` gagne -- et `(whole << 16) | frac` vaut `unsigned`.
-Convertir ca en float lit tout coefficient negatif comme 2^32 plus lui-meme :
-**-2,45 revient a 65533,55**. Chaque element negatif d'une matrice devenait un
-enorme positif.
+`frac` is **unsigned**, so C converts both operands to the common type —
+`unsigned int` wins — and `(whole << 16) | frac` is `unsigned`. Converting that
+to float reads any negative coefficient as 2^32 plus itself: **-2.45 comes back
+as 65533.55**. Every negative element of a matrix became a huge positive.
 
-Ca explique tout ce qu'on a poursuivi pendant deux jours : la geometrie
-projetee tres loin de l'ecran (les grands aplats de couleur), les profondeurs
-ou `z/w` collait au plan lointain pour tout, les modeles absents.
+That explains everything we had been chasing for two days: geometry projected
+far off screen (the big flat wedges of colour), depths where `z/w` pinned
+everything to the far plane, missing models.
 
-**Et ca s'est tres bien cache.** La matrice billboard de `mtxf_billboard` n'a,
-dans le cas courant, aucun element negatif -- elle se decodait donc
-parfaitement pendant que toutes les matrices de camera a cote d'elle etaient
-fausses. Le defaut ressemblait a un probleme de billboard.
+**And it hid very well.** `mtxf_billboard`'s billboard matrix has, in the common
+case, no negative element at all — so it decoded perfectly while every camera
+matrix beside it was wrong. The defect looked like a billboard problem.
 
-Correctif :
+The fix:
 
 ```c
 s32 fixed = (s32) (((u32) whole << 16) | frac);
 dst[i][j] = (f32) fixed / 65536.0f;
 ```
 
-Comment il a ete trouve, et c'est la lecon de methode : en **dumpant la
-matrice decodee** au lieu de raisonner dessus. Quatre echantillons du `w` de
-l'ancre d'un sprite donnaient 1310802, 17104740, 3473462, 1572941 ; divises par
-65536 : **20, 261, 53, 24** -- des entiers exacts, quatre fois de suite. Une
-telle coincidence n'existe pas. Le dump de la matrice a ensuite montre des
-lignes entieres a `65533,5` et `64319,4`, soit `65536 - petite valeur`.
+How it was found, and this is the method lesson: by **dumping the decoded
+matrix** instead of reasoning about it. Four samples of a sprite anchor's `w`
+gave 1310802, 17104740, 3473462, 1572941; divided by 65536: **20, 261, 53, 24**
+— exact integers, four times running. No such coincidence exists. The matrix
+dump then showed whole rows at `65533.5` and `64319.4`, i.e. `65536 - a small
+value`.
 
-Resultat : l'ecran de selection affiche Conker sur son kart devant le canyon,
-l'eau, le sable et son ombre portee ; le survol d'introduction affiche Pipsy
-sur l'eau avec l'ile, la plage, le ponton et les vagues ombrees. Les replis
-CPU tombent a `cpu fallback 0` sur la plupart des frames.
+Result: the selection screen shows Conker on his kart in front of the canyon,
+the water, the sand and his cast shadow; the intro flyover shows Pipsy over the
+water with the island, the beach, the jetty and shaded waves. The CPU fallbacks
+drop to `cpu fallback 0` on most frames.
 
-### `G_MW_BILLBOARD` : actif (GC_BILLBOARD=1)
+### `G_MW_BILLBOARD`: on (GC_BILLBOARD=1)
 
-L'ancre est le **sommet 0**, lu dans le jeu et non deduit du header : les deux
-sites d'emission (`camera.c:1157` et `camera.c:1240`) la poussent avec
-`gSPVertexDKR(..., 1, 0)` -- un sommet, `G_VTX_APPEND` a zero, donc index 0 --
-*avant* de charger le slot 2 et *avant* d'activer le billboarding. Le
-commentaire du decomp a cote de la branche « vehicle part » le dit d'ailleurs :
-« sprite vertices are hardcoded to start from index 1 ». La mesure confirme :
-le lot de sprite arrive en `n=4, append=1, base=1`.
+The anchor is **vertex 0**, read from the game rather than inferred from the
+header: both emission sites (`camera.c:1157` and `camera.c:1240`) push it with
+`gSPVertexDKR(..., 1, 0)` — one vertex, `G_VTX_APPEND` at zero, so index 0 —
+*before* loading slot 2 and *before* turning billboarding on. The decomp's
+comment next to the "vehicle part" branch says as much: "sprite vertices are
+hardcoded to start from index 1". The measurement confirms it: the sprite batch
+arrives as `n=4, append=1, base=1`.
 
-Ecrit une premiere fois, ca semblait degrader fortement l'image et ca avait ete
-desactive. C'etait un faux proces : `load_matrix` corrompait les coefficients
-negatifs, donc les coordonnees de clip de l'ancre etaient absurdes et les
-additionner a quoi que ce soit faisait un carnage. Le bug corrige, le
-billboarding se comporte et il est actif par defaut.
+Written the first time, it seemed to degrade the image badly and had been turned
+off. That was a false accusation: `load_matrix` was corrupting negative
+coefficients, so the anchor's clip coordinates were absurd and adding them to
+anything was carnage. With that bug fixed, billboarding behaves and it is on by
+default.
 
-### Correction du 2026-08-31 : la division perspective passe au GP
+### Fix of 2026-08-31: the perspective divide moves to the GP
 
-Le renderer divisait par `w` sur le CPU et donnait a GX des coordonnees ecran.
-Ca marche, mais ca coute deux choses qui se voient :
+The renderer was dividing by `w` on the CPU and handing GX screen coordinates.
+That works, but it costs two things you can see:
 
-- les coordonnees de texture s'interpolent alors **en affine**, lineairement en
-  espace ecran et non en profondeur, donc les grandes surfaces s'etirent -- le
-  ciel et le sol tordus du survol d'introduction ;
-- un sommet derriere l'oeil doit etre decoupe a la main, et ce que la decoupe
-  maison rate est **retourne par la division** et projete au loin, trainant son
-  triangle en **grand coin plat**.
+- texture coordinates then interpolate **affinely**, linearly in screen space
+  and not in depth, so large surfaces smear — the twisted sky and ground of the
+  intro flyover;
+- a vertex behind the eye has to be clipped by hand, and what the home-made
+  clip misses is **flipped by the divide** and projected far away, dragging its
+  triangle out as a **big flat wedge**.
 
-Ces deux defauts ont un nom et une cause connue dans `ref-sm64gc` : la legende
-de son `GFX_GX_DEBUG_PROJ_TINT` decrit le chemin CPU comme « no near-plane
-clipping, affine interpolation -- **produces both the wedge and the smear** ».
-C'est mot pour mot ce qu'on avait a l'ecran.
+Both defects have a name and a known cause in `ref-sm64gc`: the caption of its
+`GFX_GX_DEBUG_PROJ_TINT` describes the CPU path as "no near-plane clipping,
+affine interpolation — **produces both the wedge and the smear**". That is word
+for word what we had on screen.
 
-Leur correction est de nourrir le GP en espace vue et de le laisser diviser.
-GX ne prend que trois composantes de position, donc `w` doit sortir de la
-matrice de projection -- et la forme perspective de GX n'est pas une 4x4
-generale : le materiel ne garde que six coefficients, donc `clip.z` ne peut
-etre qu'une fonction **affine** de `clip.w`. Eux doivent l'ajuster par moindres
-carres a chaque lot, parce que `gfx_pc` leur donne des sommets deja projetes et
-aucune matrice a lire.
+Their fix is to feed the GP in view space and let it do the divide. GX takes
+only three position components, so `w` has to come out of the projection matrix
+— and GX's perspective form is not a general 4x4: the hardware keeps only six
+coefficients, so `clip.z` can only be an **affine** function of `clip.w`. They
+have to fit it by least squares per batch, because `gfx_pc` hands them
+already-projected vertices and no matrix to read.
 
-**Nous avons la matrice, donc on calcule les coefficients exactement.**
-`guPerspectiveF` (libultra/src/gu/perspective.c) ecrit `mf[2][2] = (n+f)/(n-f)`,
-`mf[2][3] = -1`, `mf[3][2] = 2nf/(n-f)`. En vecteurs-lignes, la colonne j
-produit la composante j, et la modelview premultipliee est affine (quatrieme
-colonne (0,0,0,1)). En developpant le produit :
+**We have the matrix, so the coefficients are computed exactly.**
+`guPerspectiveF` (libultra/src/gu/perspective.c) writes `mf[2][2] = (n+f)/(n-f)`,
+`mf[2][3] = -1`, `mf[3][2] = 2nf/(n-f)`. In row vectors, column j produces
+component j, and the pre-multiplied modelview is affine (fourth column
+(0,0,0,1)). Expanding the product:
 
     clip.z = alpha * clip.w + beta
-    alpha  = M[i][2] / M[i][3]        pour i = 0, 1, 2
+    alpha  = M[i][2] / M[i][3]        for i = 0, 1, 2
     beta   = M[3][2] - alpha * M[3][3]
 
-Verification : en substituant z = -n puis z = -f, la profondeur normalisee vaut
--1 puis +1 -- c'est la convention OpenGL. GX veut -1 au plan proche et **0** au
-plan lointain (le port SM64 l'etablit noir sur blanc), donc
-`z_gx = (z_gl - 1)/2`, et comme GX calcule `clip.z' = P22*z_vue + P23` avec
-`z_vue = -w` :
+Check: substituting z = -n and then z = -f, the normalised depth is -1 and then
++1 — the OpenGL convention. GX wants -1 at the near plane and **0** at the far
+one (the SM64 port states it plainly), so `z_gx = (z_gl - 1)/2`, and since GX
+computes `clip.z' = P22*z_view + P23` with `z_view = -w`:
 
     P22 = (1 - alpha) / 2       P23 = beta / 2
 
-Le viewport passe aussi a GX, lu du `G_MOVEMEM` et mis a l'echelle de l'EFB.
-GX et le N64 placent tous deux y normalise = +1 en haut, donc aucune inversion
-n'est necessaire : la negation explicite du chemin logiciel faisait le meme
-travail a la main.
+The viewport goes to GX as well, read from the `G_MOVEMEM` and scaled to the
+EFB. GX and the N64 both put normalised y = +1 at the top, so no flip is
+needed: the software path's explicit negation was doing the same work by hand.
 
-Mesure : la decoupe logicielle ne se declenche plus du tout (`clip 0`), aucun
-sommet ne ressort derriere l'oeil, et beaucoup de frames tournent a
-`trin proj: hw 71, cpu fallback 0`.
+Measured: the software clip no longer fires at all (`clip 0`), no vertex comes
+out behind the eye, and many frames run at `trin proj: hw 71, cpu fallback 0`.
+### The two PC recompilation projects: nothing to take
 
-### Les deux projets de recompilation PC : rien a recuperer
+`ThatGuyMcd/DKR-R` and `Rainchus/Donkey-Kong-64-Recompiled` are **static
+recompilations** built on RT64. Checked rather than assumed: DKR-R contains
+`RecompiledRSP/` and `rsp/`, and **zero occurrences of `G_TRIN`**. They
+recompile the RSP microcode itself into native code and let it produce RDP
+commands that RT64 consumes — so they never needed an F3DDKR translation table,
+which is precisely the problem being solved here. It is the inverse approach to
+ours and it does not transpose to the GameCube. The useful source remains
+`ref-sm64gc`.
 
-`ThatGuyMcd/DKR-R` et `Rainchus/Donkey-Kong-64-Recompiled` sont des
-**recompilations statiques** adossees a RT64. Verifie plutot que suppose :
-DKR-R contient `RecompiledRSP/` et `rsp/`, et **zero occurrence de `G_TRIN`**.
-Ils recompilent le microcode RSP lui-meme en code natif et le laissent produire
-des commandes RDP que RT64 consomme -- ils n'ont donc jamais eu besoin d'une
-table de traduction F3DDKR, qui est precisement le probleme qu'on resout ici.
-C'est une approche inverse de la notre et elle ne se transpose pas sur
-GameCube. La source utile reste `ref-sm64gc`.
+### Fix of 2026-08-31: the depth buffer was never cleared
 
-### Correction du 2026-08-31 : le depth buffer n'etait jamais vide
-
-**C'est la correction qui a debloque le rendu 3D**, et elle vient du portage
-SM64 de `ref-sm64gc` -- `gfx_ogc_copy_to_xfb` dans `src/pc/gfx/gfx_ogc.c`, dont
-le commentaire de `gfx_gx_start_frame` decrit exactement le piege :
+**This is the fix that unblocked 3D rendering**, and it comes from
+`ref-sm64gc`'s SM64 port — `gfx_ogc_copy_to_xfb` in `src/pc/gfx/gfx_ogc.c`,
+whose `gfx_gx_start_frame` comment describes the trap exactly:
 
 > The EFB -> XFB copy has to force `GX_SetZMode(GX_TRUE, ..., GX_TRUE)` and
 > `GX_SetColorUpdate(GX_TRUE)`, otherwise `GX_CopyDisp` does not clear the EFB.
 
-L'argument « clear » de `GX_CopyDisp` ne vide que ce que l'etat d'ecriture
-courant l'autorise a ecrire. Or **toute** display list du port se termine par
-`gfx_set_2d_state`, qui pose `GX_SetZMode(GX_FALSE, GX_ALWAYS, GX_FALSE)` : au
-moment de la copie, les ecritures de profondeur sont desactivees, donc la
-couleur etait bien effacee et **la profondeur jamais**.
+`GX_CopyDisp`'s "clear" argument only clears what the current write state
+permits it to write. And **every** display list in the port ends with
+`gfx_set_2d_state`, which sets `GX_SetZMode(GX_FALSE, GX_ALWAYS, GX_FALSE)`: at
+copy time, depth writes are off, so colour was being cleared and **depth
+never**.
 
-Le symptome n'est pas un ecran noir, il est bien plus trompeur : le depth
-buffer s'accumule d'une frame a l'autre. La geometrie 3D, qui teste
-`GX_LEQUAL`, perd contre des profondeurs ecrites par des frames precedentes
-depuis une autre position de camera, et disparait -- pendant que le chemin 2D,
-qui ne teste pas la profondeur, continue de dessiner. D'ou l'image constatee
-pendant des jours : **fonds unis et texte toujours la, ciel, decor et modeles
-absents ou clignotants**.
+The symptom is not a black screen, it is far more misleading: the depth buffer
+accumulates from frame to frame. 3D geometry, which tests `GX_LEQUAL`, loses
+against depths written by earlier frames from a different camera position, and
+disappears — while the 2D path, which does not test depth, keeps drawing. Hence
+the image we had for days: **flat backgrounds and text always there, sky, scenery
+and models missing or flickering**.
 
-`gc_gfx_copy_display` force desormais les deux mises a jour le temps de la
-copie, et fait un `GX_DrawDone` avant elle. Resultat immediat, sans aucune
-autre modification : l'ecran-titre affiche son decor 3D complet, le survol
-d'introduction affiche iles, ciel et nuages, et **les modeles de personnage
-s'affichent** sur l'ecran de selection.
+`gc_gfx_copy_display` now forces both updates for the duration of the copy, and
+does a `GX_DrawDone` before it. Immediate result, with no other change: the
+title screen shows its full 3D scenery, the intro flyover shows islands, sky and
+clouds, and **the character models appear** on the selection screen.
 
-Lecon a retenir : sur GX, l'etat de rendu au moment de la copie fait partie de
-la copie. Un `GX_CopyDisp(xfb, GX_TRUE)` ne suffit pas a garantir un EFB propre.
+The lesson: on GX, the render state at copy time is part of the copy. A
+`GX_CopyDisp(xfb, GX_TRUE)` is not enough to guarantee a clean EFB.
 
-### Correction du 2026-08-31 : `G_MTX` selectionne le slot qu'il charge
+### Fix of 2026-08-31: `G_MTX` selects the slot it loads
 
-Le port traitait `gSPMatrixDKR` comme un chargement pur, et
-`gSPSelectMatrixDKR` comme le seul moyen de rendre un slot courant. C'est la
-lecture evidente des deux noms, et elle est fausse. Trois sites d'appel de
-`camera.c` ne s'expliquent que dans l'autre sens :
+The port treated `gSPMatrixDKR` as a pure load, and `gSPSelectMatrixDKR` as the
+only way to make a slot current. That is the obvious reading of the two names,
+and it is wrong. Three call sites in `camera.c` only make sense the other way:
 
-- `mtx_cam_push` (1429) televerse le MVP propre a **chaque objet** dans le slot
-  1 et ne le selectionne jamais. Sans selection implicite, l'objet etait
-  dessine avec la matrice laissee par le decor -- et c'est exactement ce qui se
-  passait : les modeles sortaient a `w <= 0` et etaient jetes comme « derriere
-  la camera ».
-- `mtx_pop` (1552) restaure la transformation parente en la **rechargeant**
-  dans le slot 1 ; si charger ne selectionnait pas, depiler ne ferait rien.
-  Son autre branche, pile vide, utilise bien un `select` explicite.
-- `mtx_head_push` (1520) charge la matrice de tete dans le slot 2 puis
-  reselectionne le slot 1. Ce `select` n'est necessaire que parce que le
-  chargement vient de rendre le slot 2 courant.
+- `mtx_cam_push` (1429) uploads the **per-object** MVP into slot 1 and never
+  selects it. Without an implicit select, the object was drawn with the matrix
+  the scenery had left — and that is exactly what was happening: models came
+  out at `w <= 0` and were thrown away as "behind the camera".
+- `mtx_pop` (1552) restores the parent transform by **reloading** it into slot
+  1; if loading did not select, popping would do nothing. Its other branch,
+  with an empty stack, does use an explicit `select`.
+- `mtx_head_push` (1520) loads the head matrix into slot 2 and then reselects
+  slot 1. That `select` is only necessary because the load has just made slot 2
+  current.
 
-`gSPSelectMatrixDKR` sert donc a revenir a un slot deja televerse, pas a armer
-un televersement.
+So `gSPSelectMatrixDKR` is for returning to an already-uploaded slot, not for
+arming an upload.
 
-Mesure sur une frame **identique** (memes 181 commandes `G_TRIN`, memes 1141
-triangles demandes), avant / apres : triangles emis 543 -> 667, jetes au plan
-proche 167 -> 142, et surtout la repartition des sommets par slot
-1628/28/0 -> 317/1139/200. Les slots 1 et 2 ne servaient pratiquement a rien.
+Measured on an **identical** frame (the same 181 `G_TRIN` commands, the same
+1141 triangles requested), before / after: triangles emitted 543 -> 667,
+discarded at the near plane 167 -> 142, and above all the distribution of
+vertices by slot 1628/28/0 -> 317/1139/200. Slots 1 and 2 were doing
+practically nothing.
 
-### Instrumentation : l'entonnoir des triangles
+### Instrumentation: the triangle funnel
 
-`GC_DEBUG=1` recense maintenant, par frame, le sort de chaque triangle demande
-par `G_TRIN` : indices hors bornes, jetes au plan proche (en distinguant
-« tous les sommets derriere l'oeil » de « trop pres, dans `NEAR_W` »), coupes
-par le test de face arriere, ou reellement emis. Plus, par slot de matrice, les
-sommets transformes, ceux qui sortent derriere l'oeil, les chargements et les
-selections.
+`GC_DEBUG=1` now counts, per frame, the fate of every triangle `G_TRIN` asks
+for: out-of-range indices, discarded at the near plane (distinguishing "all
+vertices behind the eye" from "too close, inside `NEAR_W`"), cut by the
+back-face test, or actually emitted. Plus, per matrix slot, the vertices
+transformed, those that come out behind the eye, the loads and the selects.
 
-« Rien ne s'affiche » a quatre causes tres differentes et indiscernables a
-l'image ; une seule execution dit maintenant laquelle, au lieu d'un build par
-hypothese. C'est ce qui a localise le bug ci-dessus : le slot 2 recevait 16 a
-18 matrices par frame sans jamais transformer un seul sommet.
+"Nothing appears" has four very different causes that are indistinguishable on
+screen; one run now says which, instead of one build per hypothesis. It is what
+localised the bug above: slot 2 was receiving 16 to 18 matrices per frame
+without ever transforming a single vertex.
 
-`GC_NO_CULL=1` (nouveau reglage de `Makefile.gc`) dessine les deux
-enroulements. Le depot dit quelle valeur du drapeau `Triangle` signifie
-« dessiner la face arriere » mais jamais quel enroulement est la face avant :
-desactiver la coupe est le seul moyen de distinguer une surface absente parce
-que coupee d'une surface jamais soumise.
+`GC_NO_CULL=1` (a new `Makefile.gc` knob) draws both windings. The repository
+says which value of the `Triangle` flag means "draw the back face" but never
+which winding is the front: turning culling off is the only way to tell a
+surface missing because it was culled from one that was never submitted.
 
-### Deux hypotheses eliminees (2026-08-31)
+### Two hypotheses eliminated (2026-08-31)
 
-Le modele de personnage manquant sur l'ecran de selection avait deux suspects.
-Les deux sont ecartes, avec preuve :
+The missing character model on the selection screen had two suspects. Both are
+ruled out, with proof:
 
-- **`obj_animate`, non.** `model_instance_init` (object_models.c:270-291)
-  recopie les sommets du modele dans `vertices[0]` *et* `vertices[1]` a la
-  creation, et `animationTaskNum` vaut 0. Avec le stub, le personnage devrait
-  s'afficher en pose de repos, fige mais visible. Sa valeur de retour n'est lue
-  par aucun des trois sites d'appel.
-- **L'enroulement des faces, non.** Build avec `GC_NO_CULL=1` : le personnage
-  reste absent alors que plus rien n'est coupe.
+- **`obj_animate`, no.** `model_instance_init` (object_models.c:270-291) copies
+  the model's vertices into `vertices[0]` *and* `vertices[1]` at creation, and
+  `animationTaskNum` is 0. With the stub, the character should appear in its
+  rest pose, frozen but visible. Its return value is read by none of the three
+  call sites.
+- **Face winding, no.** Build with `GC_NO_CULL=1`: the character is still
+  missing while nothing at all is culled.
 
-La vraie cause etait ailleurs, et la piste `mtx_ortho` notee ici d'abord etait
-mauvaise : c'etait le depth buffer jamais vide (section ci-dessus). Les ~50 %
-de sommets du slot 0 qui ressortent derriere l'oeil sur les frames de menu sont
-normaux -- le decor entoure la camera.
+The real cause was elsewhere, and the `mtx_ortho` lead noted here first was
+wrong: it was the depth buffer never being cleared (the section above). The
+~50 % of slot-0 vertices that come out behind the eye on menu frames are normal
+— the scenery surrounds the camera.
 
-### Décompression des assets (fait)
+### Asset decompression (done)
 
-`gzip_inflate_block` etait un stub qui rendait 0, donc `gzip_inflate` bouclait
-zero fois et **tout asset compresse ressortait vide** : polices, textures,
-modeles, circuits. Le jeu tournait sa boucle complete sur du neant, ce qui
-donne exactement l'aspect d'un renderer qui ne marche pas.
+`gzip_inflate_block` was a stub returning 0, so `gzip_inflate` looped zero times
+and **every compressed asset came back empty**: fonts, textures, models, tracks.
+The game ran its whole loop over nothing, which looks exactly like a renderer
+that does not work.
 
-`src/gzip.c` rejoint `GAME_EXCLUDE` et `platform/gc/gc_gzip.c` le remplace en
-s'appuyant sur zlib, deja present dans les portlibs et deja lie. C'est le
-meilleur rapport travail/resultat du portage : l'inflate d'origine est celui de
-Mark Adler (le `gzip_huft_build` du depot en est la copie mot pour mot), donc
-zlib decode exactement le meme flux, et les 781 lignes de MIPS de
-`src/hasm/gzip_asm.s` n'ont pas a etre traduites.
+`src/gzip.c` joins `GAME_EXCLUDE` and `platform/gc/gc_gzip.c` replaces it on top
+of zlib, already present in the portlibs and already linked. It is the port's
+best work-to-result ratio: the original inflate is Mark Adler's (the
+repository's `gzip_huft_build` is a word-for-word copy of it), so zlib decodes
+exactly the same stream, and the 781 lines of MIPS in `src/hasm/gzip_asm.s` do
+not have to be translated.
 
-Le conteneur : quatre octets de taille decompressee en little-endian, un octet,
-puis du DEFLATE brut -- d'ou `inflateInit2(&strm, -MAX_WBITS)`. Ce n'est pas un
-fichier gzip : ni magie `1f 8b`, ni CRC final. Le decalage de 5 octets vient du
-commentaire de `src/gzip.c` lui-meme, et les deux sites d'appel le confirment.
+The container: four bytes of decompressed size in little-endian, one byte, then
+raw DEFLATE — hence `inflateInit2(&strm, -MAX_WBITS)`. It is not a gzip file:
+no `1f 8b` magic, no trailing CRC. The 5-byte offset comes from `src/gzip.c`'s
+own comment, and the two call sites confirm it.
 
-Resultat mesure : **zero erreur d'inflate** sur un run complet, et la liste
-d'affichage passe de 332 commandes a 1906, profondeur de pile 1 a 3, avec les
-formats de texture RGBA16 / RGBA32 / IA16 / IA8 qui apparaissent enfin. L'ecran
-n'est plus noir mais bleu -- la couleur que le jeu demande vraiment.
+Measured result: **zero inflate errors** on a full run, and the display list
+goes from 332 commands to 1906, stack depth 1 to 3, with the RGBA16 / RGBA32 /
+IA16 / IA8 texture formats finally appearing. The screen is no longer black but
+blue — the colour the game actually asks for.
 
-### Audio : le silence plutôt que les bips
+### Audio: silence rather than beeps
 
-*(Historique, garde parce que le raisonnement resservira.)*
-`gc_audio_run_cmds` parcourait la liste de commandes et la jetait. Le tampon
-remis ensuite a `osAiSetNextBuffer` ne contenait donc pas du silence mais ce que
-l'allocateur y avait laisse, rejoue soixante fois par seconde : une tonalite
-continue. `audio_mixer.c` exportait `gGcAudioMixerImplemented = 0` et l'etage de
-sortie emettait du silence, tout en consommant et cadençant le meme nombre de
-frames -- l'horloge du gestionnaire audio est ce qui rythme le jeu.
+*(Historical, kept because the reasoning will be needed again.)*
+`gc_audio_run_cmds` walked the command list and threw it away. The buffer handed
+back to `osAiSetNextBuffer` therefore did not contain silence but whatever the
+allocator had left there, replayed sixty times a second: a continuous tone.
+`audio_mixer.c` exported `gGcAudioMixerImplemented = 0` and the output stage
+emitted silence while consuming and pacing the same number of frames — the audio
+manager's clock is what paces the game.
 
-**Depuis le 2026-09-03 le drapeau vaut 1 et les opcodes sont ecrits.** Voir
-« Reste a faire » : le mixeur tourne mais sa sortie est fausse, et la ligne
-`aud` du heartbeat est ce qui doit etre lu en premier.
+**Since 2026-09-03 the flag is 1 and the opcodes are written.** See "Left to
+do": the `aud` line of the heartbeat is what to read first.
 
-### Géométrie (fait) — l'écran-titre s'affiche
+### Geometry (done) — the title screen appears
 
-Logo, menu START/OPTIONS et le decor 3D texture derriere. `G_MTX`, `G_VTX`,
-`G_TRIN`, le viewport via `G_MOVEMEM` et la selection de matrice par
-`G_MOVEWORD` sont implementes. Zero liste abandonnee, zero erreur d'inflate.
+The logo, the START/OPTIONS menu and the textured 3D scenery behind it. `G_MTX`,
+`G_VTX`, `G_TRIN`, the viewport through `G_MOVEMEM` and matrix selection through
+`G_MOVEWORD` are implemented. Zero abandoned lists, zero inflate errors.
 
-Rien n'a ete suppose ; chaque champ vient du depot :
+Nothing was assumed; every field comes from the repository:
 
-- **La matrice est un MVP complet.** camera.c:1418 fait
-  `mtxf_mul(model, viewProj, out)`, et `mtxf_mul` (src/hasm/math_util.c) vaut
-  `out[i][j] = somme_k a[i][k]*b[k][j]`. Avec les vecteurs-lignes du N64, cela
-  signifie `clip = v * M` : **la colonne j de M produit la composante j**.
-- **Le format virgule fixe** vient de `mtxf_to_mtx` : parties entieres des seize
-  elements dans les huit premiers mots, parties fractionnaires dans les huit
-  derniers, l'element (i,j) a l'index 16 bits `i*4+j` de chaque bloc.
-- **`guPerspectiveF`** (libultra/src/gu/perspective.c) place `-1` en mf[2][3],
-  donc w vaut `-z` et un sommet de `w <= 0` est derriere la camera.
-- **Le viewport se lit, il ne se suppose pas** : `viewport_rsp_set` le reecrit
-  par camera et l'ecran partage en depend. Deux bits de fraction (`Vp_t`).
-- **Les encodages** viennent des macros : `gSPVertexDKR` met
-  `(n-1)<<3 | (adresse&6) | append` dans l'octet de parametre, donc
-  `n = (p>>3)+1` et l'append est le bit 0 ; `gSPPolygon` met
-  `(numTris-1)<<4 | texEnabled` en bits 16..23 ; `gSPMatrixDKR` decale
-  l'emplacement de six dans ce meme octet, donc bits 22..23.
-- **Le seul point que le depot ne dit pas** est le signe de l'axe y du
-  viewport. Il est negatif ici, et cela a ete tranche en regardant l'image, pas
-  affirme.
+- **The matrix is a full MVP.** camera.c:1418 does
+  `mtxf_mul(model, viewProj, out)`, and `mtxf_mul` (src/hasm/math_util.c) is
+  `out[i][j] = sum_k a[i][k]*b[k][j]`. With the N64's row vectors, that means
+  `clip = v * M`: **column j of M produces component j**.
+- **The fixed-point format** comes from `mtxf_to_mtx`: the integer parts of the
+  sixteen elements in the first eight words, the fractional parts in the last
+  eight, element (i,j) at 16-bit index `i*4+j` of each block.
+- **`guPerspectiveF`** (libultra/src/gu/perspective.c) puts `-1` in mf[2][3], so
+  w is `-z` and a vertex with `w <= 0` is behind the camera.
+- **The viewport is read, not assumed**: `viewport_rsp_set` rewrites it per
+  camera and split screen depends on it. Two fraction bits (`Vp_t`).
+- **The encodings** come from the macros: `gSPVertexDKR` puts
+  `(n-1)<<3 | (address&6) | append` in the parameter byte, so `n = (p>>3)+1` and
+  append is bit 0; `gSPPolygon` puts `(numTris-1)<<4 | texEnabled` in bits
+  16..23; `gSPMatrixDKR` shifts the slot by six in that same byte, so bits
+  22..23.
+- **The one point the repository does not state** is the sign of the viewport's
+  y axis. It is negative here, and that was settled by looking at the image,
+  not asserted.
 
-**Bug trouve en lisant : l'index de `G_MOVEWORD` est en bits 0..7, pas 16..23.**
-`gMoveWd` est `gImmp21(pkt, G_MOVEWORD, offset, index, data)`, et gImmp21 place
-p0 au bit 8 et p1 au bit 0. L'ancien code lisait l'index la ou un *Dma1p* range
-son octet de parametre : `G_MW_SEGMENT` ne correspondait jamais et la table de
-segments restait vide. Invisible jusqu'ici parce que `rsp_segment` de DKR passe
-`base + K0BASE`, donc toutes les adresses de la liste sont absolues.
+**A bug found by reading: `G_MOVEWORD`'s index is in bits 0..7, not 16..23.**
+`gMoveWd` is `gImmp21(pkt, G_MOVEWORD, offset, index, data)`, and gImmp21 puts
+p0 at bit 8 and p1 at bit 0. The old code read the index where a *Dma1p* keeps
+its parameter byte: `G_MW_SEGMENT` never matched and the segment table stayed
+empty. Invisible until then because DKR's `rsp_segment` passes `base + K0BASE`,
+so every address in the list is absolute.
 
-**Profondeur, decoupe au plan proche et faces arriere sont maintenant en
-place.** Les sommets restent en espace de clip et la division perspective a
-lieu a l'emission, parce que la decoupe doit passer avant : diviser par un w
-negatif retourne un triangle qui traverse le plan proche au lieu de le
-raccourcir. Sutherland-Hodgman contre le seul plan `w >= 1.0` ; les cotes sont
-laisses au scissor de GX. Trois sommets en donnent au plus quatre, emis en
-eventail. La 3D a ses propres formats de vertex (POS_XYZ) et
-`GX_SetZMode(GX_TRUE, GX_LEQUAL, GX_TRUE)` ; les rectangles d'interface gardent
-le chemin plat sans profondeur, ce qui correspond aux cycles fill et copy du
-RDP plutot que d'etre seulement moins cher.
+**Depth, near-plane clipping and back faces are in place.** Vertices stay in
+clip space and the perspective divide happens at emission, because the clip has
+to come first: dividing by a negative w flips a triangle that crosses the near
+plane instead of shortening it. Sutherland-Hodgman against the single plane
+`w >= 1.0`; the sides are left to GX's scissor. Three vertices give at most
+four, emitted as a fan. 3D has its own vertex formats (POS_XYZ) and
+`GX_SetZMode(GX_TRUE, GX_LEQUAL, GX_TRUE)`; interface rectangles keep the flat,
+depthless path, which matches the RDP's fill and copy cycles rather than merely
+being cheaper.
 
-Le near/far de la projection valent -1 et 0 volontairement : cela rend la ligne
-z `clip.z = -z_in`, donc une profondeur fournie en 0..1 ressort en 0..-1, la
-plage que ce meme `gfx_ortho` produit pour une boite ordinaire. Quel que soit
-le bout que GX considere comme proche, les valeurs tombent dans la plage. Ne
-pas supposer quelles entrees de la projection GX lit, ni le sens de son z
-normalise : l'en-tete ne documente ni l'un ni l'autre.
+The projection's near/far are -1 and 0 on purpose: that makes the z row
+`clip.z = -z_in`, so a depth supplied in 0..1 comes out in 0..-1, the range that
+same `gfx_ortho` produces for an ordinary box. Whichever end GX considers near,
+the values fall inside the range. Do not assume which entries of the projection
+GX reads, nor the direction of its normalised z: the header documents neither.
 
-Deux conventions tranchees en regardant l'image, pas affirmees : le signe de y
-du viewport (verifie, le logo est a l'endroit) et le sens d'enroulement des
-faces avant (**pas encore verifie**, aucun modele ne s'affiche encore).
+### Textured rectangles (done)
 
-Restent ouverts : `G_MW_BILLBOARD` est un stub, et **le modele du personnage ne
-s'affiche pas** sur l'ecran de selection alors que son nom et le ciel texture
-le font. Piste principale, avec preuve et non supposition : `objects.c:3454`
-appelle `obj_animate(obj)` pour les modeles `MODELTYPE_ANIMATED` juste apres
-avoir pose `obj->curVertData`, et `obj_animate` est un des stubs. L'autre piste
-est l'enroulement non verifie ci-dessus ; se teste en desactivant la coupe.
+`G_TEXRECT` draws. The character selection screen shows its text in the game's
+font, gradient, outline and drop shadow included, on the blue background.
 
-### Rectangles textures (fait)
+**TMEM is not emulated.** The RDP loaded texels into 4 KB of TMEM and then read
+them back through a tile descriptor; reproducing that faithfully would mean
+reproducing TMEM. Nothing here needs it: every texture DKR draws is loaded just
+before it is used, through the fixed sequence `G_SETTIMG`, `G_SETTILE`,
+`G_LOADBLOCK`, `G_SETTILE`, `G_SETTILESIZE`, `G_TEXRECT`. So the address of the
+last `G_SETTIMG` a *load* actually consumed is the texture, the tile descriptor
+says how to read it, and `G_SETTILESIZE` says its size. It is the shortcut every
+high-level N64 renderer takes; it only trips on the "load once, draw several
+times from different corners of TMEM" idiom, which is a 3D idiom and not a
+rectangle one.
 
-`G_TEXRECT` dessine. L'ecran de selection de personnage affiche son texte dans
-la police du jeu, degrade, contour et ombre portee compris, sur le fond bleu.
+A detail that matters: the address is captured at the **load**, not at the
+`G_SETTIMG`. The list sets the image, describes a loading tile, loads, *then*
+describes the tile it will actually draw through — and the two descriptors
+deliberately disagree.
 
-**TMEM n'est pas emule.** Le RDP chargeait les texels dans 4 Ko de TMEM puis les
-relisait a travers un descripteur de tuile ; reproduire ça fidelement voudrait
-dire reproduire TMEM. Rien ici n'en a besoin : chaque texture que DKR dessine
-est chargee juste avant d'etre utilisee, par la sequence fixe `G_SETTIMG`,
-`G_SETTILE`, `G_LOADBLOCK`, `G_SETTILE`, `G_SETTILESIZE`, `G_TEXRECT`. Donc
-l'adresse du dernier `G_SETTIMG` qu'un *chargement* a effectivement consomme
-est la texture, le descripteur de tuile dit comment la lire, et
-`G_SETTILESIZE` dit sa taille. C'est le raccourci que prend tout renderer N64
-de haut niveau ; il ne tombe que sur l'idiome « charger une fois, dessiner
-plusieurs fois depuis des coins differents de TMEM », qui est un idiome 3D et
-non un idiome de rectangle.
+**Everything is converted to `GX_TF_RGBA8`.** The formats in play (RGBA5551,
+RGBA8888, IA16, IA8) would each have a narrower GX format, and will one day, but
+a single 32-bit target leaves only one tiling to get wrong. GX stores RGBA8 in
+4x4 texel blocks over 64 bytes: sixteen AR pairs, then sixteen GB pairs — so it
+is never a memcpy, whatever the endianness agreement.
 
-Detail qui compte : l'adresse est retenue au **chargement**, pas au
-`G_SETTIMG`. La liste pose l'image, decrit une tuile de chargement, charge,
-*puis* decrit la tuile a travers laquelle elle va reellement dessiner -- et les
-deux descripteurs ne s'accordent pas, volontairement.
+The texture cache is keyed on the address **and on a fingerprint of the texels**,
+because the game decompresses its textures into a heap it reuses: an address
+alone does not identify a texture.
 
-**Tout est converti en `GX_TF_RGBA8`.** Les formats en presence (RGBA5551,
-RGBA8888, IA16, IA8) auraient chacun un format GX plus etroit, et l'auront un
-jour, mais une cible unique en 32 bits ne laisse qu'un seul pavage a ne pas se
-tromper. GX range le RGBA8 en blocs de 4x4 texels sur 64 octets : seize paires
-AR, puis seize paires GB -- ce n'est donc jamais un memcpy, quelle que soit la
-concordance de boutisme.
+`G_TEXRECT` is the list's only three-word command. Its texture coordinates live
+in the two `G_RDPHALF`s that follow it, consumed by the walker itself: leaving
+them to the `switch` would draw the rectangle untextured and then execute two
+no-ops.
 
-Le cache de textures est indexe sur l'adresse **et sur une empreinte des
-texels**, parce que le jeu decompresse ses textures dans un tas qu'il reutilise :
-une adresse seule n'identifie pas une texture.
+### The rendering base
 
-`G_TEXRECT` est la seule commande de trois mots de la liste. Ses coordonnees de
-texture vivent dans les deux `G_RDPHALF` qui la suivent, consommes par le
-walker lui-meme : les laisser au `switch` dessinerait le rectangle sans texture
-puis executerait deux non-ops.
+`GC_DEBUG=1` prints, once a second, the full census of the last display list:
+command count, `G_DMADL` sublists, stack depth, a per-opcode histogram, filled
+rectangles with their colour and corners, and the raw words of the last
+`G_SETTILE` / `G_SETTILESIZE` / `G_TEXRECT`. It is what redirected the work
+towards 2D instead of geometry.
+### Fixed recently
 
-### Le socle de rendu
+Four bugs all presented the same way: a still black screen.
 
-`GC_DEBUG=1` fait afficher, une fois par seconde, le recensement complet de la
-derniere display list : nombre de commandes, sous-listes `G_DMADL`, profondeur
-de pile, histogramme par opcode, rectangles remplis avec leur couleur et leurs
-coins, et les mots bruts du dernier `G_SETTILE` / `G_SETTILESIZE` / `G_TEXRECT`.
-C'est ce qui a redirige le travail vers la 2D au lieu de la geometrie.
+- **The scheduler broadcast the retrace to all its clients.** libultra does
+  that, but Rare added an `id` field to `OSScClient` (the comment in
+  `include/PR/sched.h` says so) and routes on it, because DKR registers a client
+  whose queue is the reset button: `is_reset_pressed()` treats *any* message
+  arriving on `gNMIMesgQueue` as a press. So the game believed it had been reset
+  on the very first frame and went into its `while (1) ;`. The retrace now goes
+  to everyone except the PRE_NMI client, and PRE_NMI only to it.
+- **`segmented_to_virtual` was throwing away absolute pointers.** Masking the
+  top byte as a segment number turns `0x80d36030` into segment 0, offset
+  `0x00d36030`: the walker jumped into low memory, read zeros there and decoded
+  them as `G_NOOP` for ever — inside the scheduler thread, which takes the whole
+  machine with it. A top byte greater than the number of segments now means
+  "already an absolute address", and a physical address (the RSP addressed RDRAM
+  physically) is brought back into MEM1.
+- **`G_DMADL` was treated as a `G_DL`.** It is not a call: according to
+  `gDkrDmaDisplayList` in `include/f3ddkr.h`, bits 16..23 carry a *command
+  count* (and bits 0..15 the same count in bytes), and the target block has no
+  `G_ENDDL` — `dDialogueBoxDrawModes` in `src/font.c` is a bare `Gfx[2]`. The
+  RSP uploaded exactly that many into DMEM, executed them, then carried on.
+  Reading those bits as `G_DL`'s "push" flag made every `G_DMADL` with a
+  non-zero count look like a jump: the walker never came back to the calling
+  list and eventually read data. The walker now carries an end bound per stack
+  level, and checks the count against the byte length.
+- **The display-list walker had no bound at all.** It has one now, plus
+  validation of every jump target: a list it does not understand costs one frame
+  and one diagnostic line, instead of freezing the console.
+- **The game thread was running on 64 KB of stack.** `GC_GAME_STACK_SIZE`
+  (256 KB) was declared but never used: `osCreateThread` was allocating the
+  generic size to everyone. Every stack now carries a sentinel.
 
-### Corrigé récemment
+Two more, unrelated to the black screen:
 
-Quatre bugs se presentaient tous de la meme façon : un ecran noir immobile.
+- `osSetIntMask` was re-enabling interrupts instead of restoring the previous
+  state, which breaks `audiosfx.c`'s nested critical sections. It now returns
+  and restores libogc's IRQ level.
+- `gc_assets.c` passed `NULL` to `ARQ_PostRequest`, which libogc dereferences
+  immediately, and called `AR_Alloc` after an `AR_Init(NULL, 0)` that leaves it
+  nowhere to record anything. The port manages its own ARAM region, which is the
+  documented mode when you initialise that way.
+- Header dependency tracking did not work: `-MF $(BUILD)/$*.d` lived inside a
+  simply-expanded `CFLAGS` (`:=`), so `$*` was evaluated with no stem and every
+  unit wrote into `build/gc/.d`. Objects never rebuilt on a header change.
 
-- **Le scheduler diffusait le retrace a tous ses clients.** libultra fait ça,
-  mais Rare a ajoute un champ `id` a `OSScClient` (le commentaire de
-  `include/PR/sched.h` le dit) et route dessus, parce que DKR enregistre un
-  client dont la file est le bouton reset : `is_reset_pressed()` considere
-  *n'importe quel* message arrivant sur `gNMIMesgQueue` comme un appui. Le jeu
-  se croyait donc reinitialise des la premiere frame et partait dans son
-  `while (1) ;`. Le retrace va desormais a tout le monde sauf au client
-  PRE_NMI, et PRE_NMI seulement a lui.
-- **`segmented_to_virtual` jetait les pointeurs absolus.** Masquer l'octet de
-  poids fort en numero de segment transforme `0x80d36030` en segment 0, offset
-  `0x00d36030` : le walker sautait en memoire basse, y lisait des zeros et les
-  decodait en `G_NOOP` indefiniment -- dans le thread du scheduler, ce qui
-  emporte toute la machine. Un octet de poids fort superieur au nombre de
-  segments signifie maintenant « adresse deja absolue », et une adresse
-  physique (le RSP adressait la RDRAM physiquement) est ramenee dans MEM1.
-- **`G_DMADL` etait traite comme un `G_DL`.** Ce n'est pas un appel : d'apres
-  `gDkrDmaDisplayList` dans `include/f3ddkr.h`, les bits 16..23 portent un
-  *nombre de commandes* (et les bits 0..15 le meme nombre en octets), et le bloc
-  vise n'a pas de `G_ENDDL` -- `dDialogueBoxDrawModes` dans `src/font.c` est un
-  `Gfx[2]` nu. Le RSP en televersait exactement ce nombre en DMEM, les
-  executait, puis reprenait la suite. Lire ces bits comme le drapeau « push » de
-  `G_DL` faisait passer pour un saut tout `G_DMADL` de compte non nul : le
-  walker ne revenait jamais dans la liste appelante et finissait par lire des
-  donnees. Le walker porte desormais une borne de fin par niveau de pile, et
-  verifie le compte contre la longueur en octets.
-- **Le walker de display list n'avait aucune borne.** Il en a une maintenant,
-  plus une validation de la cible de chaque saut : une liste qu'il ne comprend
-  pas coute une frame et une ligne de diagnostic, au lieu de figer la console.
-- **Le thread de jeu tournait sur 64 Ko de pile.** `GC_GAME_STACK_SIZE` (256 Ko)
-  etait declare mais jamais utilise : `osCreateThread` allouait la taille
-  generique a tout le monde. Chaque pile porte desormais une sentinelle.
+### Done and verified
 
-Deux autres, sans rapport avec l'ecran noir :
+The porting layer, file by file. They all compile without error, and the
+right-hand column says what each one replaces.
 
-- `osSetIntMask` reactivait les interruptions au lieu de restaurer l'etat
-  precedent, ce qui casse les sections critiques imbriquees d'`audiosfx.c`.
-  Il rend et reprend maintenant le niveau d'IRQ de libogc.
-- `gc_assets.c` passait `NULL` a `ARQ_PostRequest`, que libogc dereference
-  immediatement, et appelait `AR_Alloc` apres un `AR_Init(NULL, 0)` qui ne lui
-  laisse nulle part ou noter quoi que ce soit. Le port gere lui-meme sa region
-  ARAM, ce qui est le mode documente quand on initialise ainsi.
-- Le suivi des dependances d'en-tetes ne marchait pas : `-MF $(BUILD)/$*.d`
-  vivait dans un `CFLAGS` a affectation simple (`:=`), donc `$*` etait evalue
-  sans radical et toutes les unites ecrivaient dans `build/gc/.d`. Les objets
-  ne se reconstruisaient jamais sur changement d'en-tete.
-
-### Terminé et vérifié
-
-La couche de portage, fichier par fichier. Tous compilent sans erreur, et la
-colonne de droite dit ce que chacun remplace.
-
-| Domaine | Fichier | Correspondance |
+| Area | File | Correspondence |
 |---|---|---|
-| Threads | `ultra/os_thread.c` | LWP, avec sémaphore de démarrage pour la sémantique « créé mais arrêté », piles allouées ici (celles du jeu sont dimensionnées pour MIPS) |
-| Messages | `ultra/os_message.c` | `MQ_*` de libogc, handle rangé dans `mtqueue`, `validCount` maintenu car `save_data.c` le lit |
-| Scheduler | `ultra/os_sched.c` | exécution synchrone des tâches, messagerie préservée |
-| Temps | `ultra/os_time.c` | time base Gekko remis à l'échelle du compteur N64 (rapport exact 125/108) |
-| Cache | `ultra/os_cache.c` | `osWritebackDCacheAll` est un no-op assumé : plus aucun coprocesseur ne lit la mémoire hors cache |
-| VI | `ultra/os_vi.c` + `gc_video.c` | `VIDEO_*`, retrace en callback, cadencement `fb_update` reproduit tel quel |
-| DMA assets | `ultra/os_pi.c` + `gc_assets.c` | ARQ vers l'ARAM, avec bounce buffer pour les transferts non alignés sur 32 octets |
-| Manettes | `ultra/os_cont.c` | `PAD_*` ; N64 Z → gâchette L, N64 L → bouton Z, boutons C → stick C |
-| Sauvegarde | `ultra/os_eeprom.c` | EEPROM 4 kbit → un blob de 512 octets via `gc_storage.c` |
-| Audio (sortie) | `ultra/os_ai.c` | AI 48 kHz + rééchantillonnage linéaire depuis le taux du jeu |
-| Système | `ultra/os_system.c` | globales de boot, `osVirtualToPhysical` en identité (le mixeur tourne sur le CPU et doit pouvoir déréférencer) |
-| Audio (mixage) | `audio/audio_mixer.c` | les quinze opcodes de l'ABI, `A_POLEF` compris |
-| Controller Pak | `ultra/os_pfs.c` | l'API du pak émulée sur une image de 32 Ko, 123 pages de 256 octets |
-| Stockage | `gc_storage.c` | un blob nommé : carte mémoire (deux slots) puis carte SD. EEPROM et pak y passent tous les deux |
-| Plantages | `gc_crash.c` | vecteurs PowerPC via `-Wl,--wrap`, rapport sur la carte, rejeu à l'écran au boot suivant |
-| Journal | `gc_logfile.c` | `sd:/dkr/dkr.log`, fichier de 256 Ko preattribue au boot : les vidanges ecrasent des octets et ne touchent jamais la FAT |
-| Registres N64 | `gc_n64io.c` + `include/PR/rcp.h` | `IO_READ`/`IO_WRITE` repondus au lieu d'etre dereferences ; l'inconnu est compte, pas faute |
-| Assertions | `gc_assert.c` | `__assert` avec l'ordre du decompile, journalise une fois par site et retourne |
+| Threads | `ultra/os_thread.c` | LWP, with a start semaphore for the "created but stopped" semantics, stacks allocated here (the game's are sized for MIPS) |
+| Messages | `ultra/os_message.c` | libogc's `MQ_*`, handle kept in `mtqueue`, `validCount` maintained because `save_data.c` reads it |
+| Scheduler | `ultra/os_sched.c` | synchronous task execution, messaging preserved |
+| Time | `ultra/os_time.c` | Gekko time base rescaled to the N64 counter (exact ratio 125/108) |
+| Cache | `ultra/os_cache.c` | `osWritebackDCacheAll` is a deliberate no-op: no coprocessor reads memory outside the cache any more. `osInvalDCache` never discards a partially covered line |
+| VI | `ultra/os_vi.c` + `gc_video.c` | `VIDEO_*`, retrace as a callback, `fb_update` pacing reproduced as it was |
+| Asset DMA | `ultra/os_pi.c` + `gc_assets.c` | ARQ to ARAM, with a bounce buffer for transfers not aligned to 32 bytes |
+| Controllers | `ultra/os_cont.c` | `PAD_*`; N64 Z → L trigger, N64 L → Z button, C buttons → C stick |
+| Save | `ultra/os_eeprom.c` | 4 kbit EEPROM → a 512-byte blob through `gc_storage.c` |
+| Audio (output) | `ultra/os_ai.c` | AI at 48 kHz + linear resampling from the game's rate |
+| System | `ultra/os_system.c` | boot globals, `osVirtualToPhysical` as identity (the mixer runs on the CPU and has to be able to dereference) |
+| Audio (mixing) | `audio/audio_mixer.c` | all sixteen opcodes of the ABI, `A_POLEF` included |
+| Controller Pak | `ultra/os_pfs.c` | the pak's API emulated over a 32 KB image, 123 pages of 256 bytes |
+| Storage | `gc_storage.c` | one named blob: memory card (both slots) then SD card. The EEPROM and the pak both go through it |
+| Crashes | `gc_crash.c` | PowerPC vectors through `-Wl,--wrap`, report on the card, replayed on screen at the next boot |
+| Log | `gc_logfile.c` | `sd:/dkr/dkr.log`, a 256 KB file preallocated at boot: flushes overwrite bytes and never touch the FAT |
+| N64 registers | `gc_n64io.c` + `include/PR/rcp.h` | `IO_READ`/`IO_WRITE` answered instead of dereferenced; the unknown is counted, not faulted |
+| Assertions | `gc_assert.c` | `__assert` with the decompilation's order, logged once per site, and it returns |
 
-### Reste à faire
+### Four symptoms from the ninth session (2026-09-04, from console)
 
-Mis à jour le **2026-09-04**, après sept sessions sur console. L'ordre est celui
-que la mesure dicte ; chaque poste porte le chiffre qui le justifie.
+Reported by ear and by eye after a run of build `cba85be2`, alongside the
+36-heartbeat log that run produced. **None of them is diagnosed yet**; what
+follows is what the log already says about each, so that the next run measures
+rather than guesses.
 
-**Fait le 2026-09-04.** Sections dédiées plus haut pour chacune :
+**1. The audio crackles.** Not the old saturation — `clipped 0/22000` on every
+beat, and `peak 12613`, so nothing is clipping and nothing is running at full
+scale. What the log does show is a steady stream of output underruns:
 
-- **`a_interleave`**, la cause racine de la saturation audio : la moitié de
-  chaque trame était du bruit non atténué. Mesuré après : `clipped 0..64/18000`
-  par tâche, contre un pic collé à 32767 avant. **Pas encore jugé à l'oreille.**
-- **`A_POLEF`** (quinzième et dernier opcode audio), donc **réverbération
-  rallumée** (`GC_AUDIO_FX ?= 1`).
-- **`G_PERSPNORMALIZE`** et **`G_SETBLENDCOLOR`** : `ignored:` et `aud-ign:`
-  sont **tous deux vides**.
-- **Le journal sur carte SD**, préalloué pour ne jamais toucher la FAT.
-- **Le gestionnaire de plantage**, porté sur les vecteurs PowerPC — et rendu
-  incapable de fauter lui-même (`MSR_FP`, aucun printf).
-- **Le Controller Pak** et **la carte mémoire**, EEPROM comprise.
-- **Le message de fin de tâche du scheduler** — première cause du plantage
-  matériel : le portage renvoyait `task->msg`, NULL pour toute tâche graphique
-  de DKR, et le jeu le déréférençait.
-- **Les registres matériels N64** (`gc_n64io.c`) — `cam_init` lisait
-  `PI_STATUS_REG` en dur, non mappé ici. Seconde cause.
-- **`__assert`** (`gc_assert.c`) — même nom que celui de newlib, trois arguments
-  chacun, ordre inverse ; le troisième était déréférencé comme une chaîne.
-- **Le coût de la console framebuffer** : 686 Ko de `memcpy` par ligne défilée,
-  dans le framebuffer que GX possède. Mesuré à 1659 ms pour 60 retraces avant,
-  1200 après — la valeur exacte d'une console 50 Hz.
-- **La corruption de la carte SD** : le journal s'allongeait à chaque vidange et
-  réécrivait la FAT une fois par seconde sur une machine qui mourait en cours de
-  route. Le fichier est préattribué maintenant.
+| | per beat (1.2 s) |
+|---|---|
+| DMA callbacks | ~229 |
+| frames consumed | ~57 600 |
+| **silent frames** | **126 to 265** |
 
-`platform/gc/stubs.c` ne contient plus aucun `PORT-TODO`.
+That is 0.2 % to 0.5 % of the output — small as a fraction, and completely
+different as a sound depending on its shape. 256 isolated zero frames are 256
+clicks a second; one run of 256 is a single 5 ms dropout. **The totals cannot
+tell those apart, and they need different fixes.**
+
+There is a second thing the log says that does not add up on its own: `ring`
+reports about 2040 frames buffered at every beat, which is eight DMA blocks of
+headroom — a ring that deep should not run dry at all. But `ring` is sampled by
+the **producer**, immediately after it has finished filling, which is the one
+moment it is guaranteed to look full.
+
+So the instrument added for the next run measures the shape and the consumer's
+view:
+
+    ai drops N events, longest M frames, ringMin R, gap G cb
+
+`events` counts separate dropouts, `longest` the longest run of silent frames
+inside one DMA block, `ringMin` the smallest depth seen **at callback entry**,
+and `gap` the longest run of callbacks with no push at all. Reset every beat.
+`ringMin` staying high while `events` is non-zero would mean something else
+entirely; `gap` going to eight or more names a producer that stalls.
+
+**2. The character shadows flicker.** Related to item 5 below (the flat, pale
+ground) — the shadows are drawn against it — but flicker is a different failure
+from "cannot be read". Flicker per frame means a state that alternates: a depth
+test that alternately passes and fails, a decal bias whose sign is marginal, or
+a batch drawn in a different order from frame to frame. `cover` already names
+the widest primitive with its combiner and render mode; restricted to the
+shadow batch it would say which.
+
+**3. Menu text textures do not load.** The text is missing, not magenta and not
+garbled — and the texture counters are clean: `tex asks 295 = hits 295 +
+converts 0`, `NULL dim 0 addr 0 alloc 0`, `tex magenta: unhandled 0, no tlut 0`,
+`held 857 KB`. So nothing is being asked for and refused. The interesting number
+is `texrects 252` per frame: the rectangles are being drawn. Either they are
+drawn with the wrong texture, or they are drawn somewhere off screen, or the
+glyphs never made it into memory in the first place — and that last one is the
+only hypothesis that connects to the asset that does not decompress.
+
+**4. 2D sprites are wrong** — the balloons, the banana count, the in-race HUD.
+The same family as item 3 and as the "1" card behind each character: everything
+in this list goes through the texrect and sprite path. The one measurement that
+would split "wrong texture" from "wrong place" is the screen box, and `cover`
+plus `cpu box` already report it.
+
+**These four are now the whole open list.** Items 1 and 2 are independent; 3, 4
+and the "1" card are very likely one defect.
+
+### Left to do
+
+Updated **2026-09-04**, after nine console sessions. The order is the one the
+measurements dictate; every item carries the number that justifies it.
+
+**Done on 2026-09-04.** Dedicated sections above for each:
+
+- **`a_interleave`**, the root cause of the audio saturation: half of every
+  frame was unattenuated noise. Measured after: `clipped 0..64/18000` per task,
+  against a peak pinned at 32767 before.
+- **`A_POLEF`** (the fifteenth and last audio opcode), so **the reverb is back
+  on** (`GC_AUDIO_FX ?= 1`).
+- **`G_PERSPNORMALIZE`** and **`G_SETBLENDCOLOR`**: `ignored:` and `aud-ign:`
+  are **both empty**.
+- **The log on the SD card**, preallocated so it never touches the FAT.
+- **The crash handler**, ported to the PowerPC vectors — and made incapable of
+  faulting itself (`MSR_FP`, no printf).
+- **The Controller Pak** and **the memory card**, EEPROM included.
+- **The scheduler's task completion message** — the first cause of the hardware
+  crash: the port returned `task->msg`, NULL for every DKR graphics task, and
+  the game dereferenced it.
+- **The N64 hardware registers** (`gc_n64io.c`) — `cam_init` was reading
+  `PI_STATUS_REG` directly, unmapped here. The second cause.
+- **`__assert`** (`gc_assert.c`) — the same name as newlib's, three arguments
+  each, opposite order; the third was dereferenced as a string.
+- **The framebuffer console's cost**: 686 KB of `memcpy` per scrolled line, into
+  the framebuffer GX owns. Measured at 1659 ms per 60 retraces before, 1200
+  after — the exact value for a 50 Hz console.
+- **The SD card corruption**: the log grew on every flush and rewrote the FAT
+  once a second on a machine that was dying partway through. The file is
+  preallocated now.
+- **`osInvalDCache`** discarding a neighbour's dirty cache lines, and **the
+  zero-byte allocation report** consuming the only report there was.
+
+`platform/gc/stubs.c` contains no `PORT-TODO` at all.
 
 ---
 
-**0. Le run du 2026-09-04 (build `0a8d733e`) : ce qu'il a dit.** La console
-démarre, dessine et tient la cadence — `clock: 1200 ms`, `180 retr`, `129`
-images, `ignored:` et `aud-ign:` vides, `asserts 0`, `n64 io: 3 reads, 0
-unknown`. Le bloc `CRASH` de la carte était le faux positif d'allocation nulle,
-pas un plantage. Le seul signal réel est le `gzip: inflate -3`, une fois, au
-bout de ~3,5 s, dans les menus. Build suivant : `cba85be2`.
+**1. The audio crackle.** The one symptom with a number already attached: 126 to
+265 silent output frames per 1.2 s. The next run's `ai drops` line says whether
+that is a sprinkle of clicks or one dropout, and `ringMin` says whether the ring
+genuinely empties. Do not touch `RING_FRAMES` before reading it — 2048 and 4096
+were measured and truncate buffers.
 
-**1. VÉRIFIER QUE LA CONSOLE DÉMARRE.** Deux causes racines corrigées coup sur
-coup : le message de fin de tâche (le jeu déréférençait NULL à chaque image) et
-la lecture d'un registre matériel N64 dans `cam_init`. Le second run a montré le
-jeu arrivant jusqu'aux menus, donc le premier correctif tient. C'est le prochain
-run qui dit si le second suffit.
+**2. Menu text, 2D sprites, the HUD, and the "1" card.** Four symptoms that all
+live on the texrect and sprite path, with clean texture counters, which makes
+"the texture was never loaded" and "the rectangle is in the wrong place" the two
+live hypotheses. `cover` restricted to the texrects of one screen separates them
+in a single run. **Do not fix before measuring.**
 
-Si ça plante encore, le journal doit contenir un bloc `CRASH` complet — le
-gestionnaire ne peut plus se saborder et plus rien ne tourne après lui pour
-écraser l'écran — et `n64 io: ... N unknown (last %08x)` dans le heartbeat nomme
-tout registre N64 que le portage ne modélise pas encore.
+**3. The asset that does not decompress.** ARAM is verified identical, and the
+failure did not recur on the build that fixed `osInvalDCache`. Watch for it; the
+read ring and the ARAM re-read are in place if it comes back. If it is genuinely
+gone, item 2's third hypothesis loses its most plausible mechanism.
 
-**2. L'asset qui ne se décompresse pas.** Le run avec `src` et `from` a donné
-`object_model_init +408`, et une mesure hors ligne contre la ROM a éliminé
-trois hypothèses d'un coup : le format du conteneur est juste (les 390 modèles
-se décompressent hors ligne), la table des modèles est saine, et les octets vus
-(`dd 4a dd 4a dd 0a`) **n'existent nulle part dans la ROM**. Le tampon n'a donc
-jamais reçu d'octets d'asset. Trois possibilités restent et l'instrument du
-prochain run les sépare : l'anneau des lectures dit si la lecture a eu lieu, la
-relecture ARAM dit si l'image est bonne à cet offset, et `gc_assets_verify()`
-dit au démarrage si l'image entière est intacte. Voir « Un asset ne se
-décompresse pas », sous-section du 2026-09-04.
+**4. The flat, pale ground, and the flickering shadows.** Visible on the
+captures, present with **and** without `GC_DYNLIT2`. The texture counters are
+clean, so it is not a failed conversion. **Measure before fixing**: `cover`
+already names the widest primitive with its texture and its combiner.
 
-*(Le `mempool_alloc_safe(0)` qui accompagnait ce défaut **n'en est pas un** :
-trois sections d'assets de la ROM sont vides par construction. Le rapport de
-plantage ne le signale plus comme une panne — voir la section dédiée. Les trois
-assertions de `env.c` ne se déclenchent pas non plus : `asserts 0`.)*
+**5. Frame pacing.** A fidelity gap noticed while reading
+`libultra/src/sc/sched.c` and **deliberately not fixed** in the same commit as a
+crash: the original defers an `OS_SC_LAST_TASK` reply until two retraces have
+passed (`sc->unkTask`, `frameCount`), which is the game's 30 frames-per-second
+ceiling. The port replies immediately. To be ported properly, with `frameCount`
+incremented on the retrace as in the original.
 
-**3. Écouter l'audio.** Corrigé par la mesure, pas encore par l'oreille. Le
-chiffre à surveiller dans `dkr.log` est `clipped N/18000` : quelques dizaines
-est normal pour un jeu fort, quelques centaines serait une distorsion qui reste
-à expliquer. Si le son est mauvais, l'A/B en une compilation est
-`GC_AUDIO_FX=0`.
+**6. Audio latency, ~112 ms.** An accepted consequence of `RING_FRAMES 8192`.
+Getting it back needs a finer acceptance policy, **not** a smaller ring.
 
-**4. Le cadencement des images.** Écart de fidélité relevé en lisant
-`libultra/src/sc/sched.c` et **volontairement non corrigé** dans le même commit
-qu'un plantage : l'original diffère la réponse d'une tâche `OS_SC_LAST_TASK`
-jusqu'à ce que deux retraces soient passés (`sc->unkTask`, `frameCount`), ce qui
-est le plafond à 30 images/seconde du jeu. Le portage répond immédiatement. À
-porter proprement, avec `frameCount` incrémenté au retrace comme dans
-l'original.
+**7. CPU-fallback sprites off screen to the left**: `cpu box (-398,38)-(-196,63)
+slot2 bb1`. The screen box is negative, so either the billboard anchor or the
+fallback's projection puts the quad to the left of the screen.
 
-**5. Le sol en aplat clair.** Visible sur les captures, présent avec **et** sans
-`GC_DYNLIT2`. C'est ce qui empêche les ombres de se lire. Les compteurs de
-texture sont propres (`tex magenta: unhandled 0, no tlut 0`), donc ce n'est pas
-une conversion ratée. **Mesurer avant de corriger** : `cover` nomme déjà la
-primitive la plus large avec sa texture et son combineur.
+**8. Verify ghosts end to end.** The Controller Pak is emulated and compiles,
+but the full path — save, power off, power on, read back — has never been
+walked.
 
-**6. La latence audio, ~112 ms.** Conséquence assumée de `RING_FRAMES 8192`.
-La récupérer demande une politique d'acceptation plus fine, **pas** un anneau
-plus petit — 2048 et 4096 ont été mesurés et tronquent les tampons.
+**9. A freeze after several presses of START**, getting reasonably far into the
+menus. The heartbeat stops completely, so it is the boot thread itself that is
+no longer running. Not reproducible in four attempts. To be instrumented with
+`gc_stack_overflowed`, the game thread's `blocked at`, and the entry/exit pairs
+of `gc_gfx_run_dl`.
 
-**7. Le carton « 1 » derrière chaque personnage** de l'écran de sélection. Voir
-« Symptômes ouverts » ci-dessous.
+### Three method traps, learned on 2026-09-03
 
-**8. Vérifier les fantômes de bout en bout.** Le Controller Pak est émulé et
-compile, mais le chemin complet — enregistrer, éteindre, rallumer, relire — n'a
-pas été parcouru.
+**The instrument itself can lie.** The heartbeat beats every 60 VSyncs and I
+divided by "one second" for a long time. It is **1101** under Dolphin and
+**1200** on the user's PAL console. The heartbeat now prints `clock: N ms since
+last beat`; **any rate taken from this log must be scaled by
+`1000/elapsedMs`.**
 
-### Trois pièges de méthode, appris le 2026-09-03
+**Do not "correct" the reference by reasoning.** `ref-sm64gc` is proven against
+real hardware. Twice that day I wrote an elegant conclusion with no measurement
+— the envmixer's `step_diff` line, and the claim that `A_POLEF` only filtered
+the output tap. Both were wrong.
 
-**L'instrument lui-même peut mentir.** Le heartbeat bat tous les 60 VSyncs et
-j'ai longtemps divisé par « une seconde ». C'en fait **1101** sous Dolphin et
-**1200** sur la console PAL de l'utilisateur. Le heartbeat imprime désormais
-`clock: N ms since last beat` ; **tout taux tiré de ce log doit être mis à
-l'échelle par `1000/elapsedMs`.**
+**A maximum says nothing about a distribution.** `peak` correctly named the
+audio saturation, then went on shouting after it was fixed. Counting clipped
+samples next to the maximum cost three lines and settled it in one run. When a
+counter saturates, add the one that counts rather than the one that maximises.
 
-**Ne pas « corriger » la référence par raisonnement.** `ref-sm64gc` est éprouvé
-contre du vrai matériel. Deux fois ce jour-là j'ai écrit une conclusion élégante
-sans mesure — la ligne `step_diff` de l'envmixer, et l'affirmation que `A_POLEF`
-ne filtrait que la prise de sortie. Les deux étaient fausses.
+### And five learned on 2026-09-04, all expensive
 
-**Un maximum ne dit rien sur une distribution.** `peak` a correctement désigné
-la saturation audio, puis a continué de crier après la correction. Le compte
-d'échantillons écrêtés à côté du maximum a coûté trois lignes et a tranché en un
-run. Quand un compteur sature, ajouter celui qui compte plutôt que celui qui
-maximise.
+**Re-read the boring opcode.** The audio defect was not in the envmixer, nor in
+the ADPCM decoder, nor in the resampler — the three functions whose arithmetic
+deserved checking, and all three checked twice. It was in `a_interleave`,
+fourteen lines that do nothing but copy samples, never compared against the
+reference because there was "nothing to get wrong". The right heuristic is not
+"where is the arithmetic hard" but **"which lines have never been compared
+against the reference"**.
 
-### Et quatre appris le 2026-09-04, tous chers
+**The debug channel is part of the system under test.**
+`CON_EnableGecko(EXI_CHANNEL_1, FALSE)` was sending USB Gecko protocol into the
+user's SD Gecko, on the same EXI channel, from the first day. Harmless under the
+emulator, whose slot B *is* a Gecko. Ask what the instrument **occupies**, not
+only what it prints.
 
-**Relire l'opcode ennuyeux.** Le défaut audio n'était ni dans l'envmixer, ni
-dans le décodeur ADPCM, ni dans le rééchantillonneur — les trois fonctions dont
-l'arithmétique méritait vérification, et toutes les trois vérifiées deux fois.
-Il était dans `a_interleave`, quatorze lignes qui ne font que recopier des
-échantillons, jamais comparées à la référence parce qu'il n'y avait « rien à se
-tromper ». La bonne heuristique n'est pas « où l'arithmétique est-elle
-difficile » mais **« quelles lignes n'ont jamais été comparées à la
-référence »**.
+**A change to where the instrument writes is a change to the instrument.**
+Buffering the markers to remove a real card-concurrency problem lost exactly the
+markers the crash was supposed to leave behind. That deserves the same
+scepticism as a change to the code being measured.
 
-**Le canal de debug fait partie du système testé.** `CON_EnableGecko(EXI_CHANNEL_1,
-FALSE)` envoyait du protocole USB Gecko dans le SD Gecko de l'utilisateur, sur
-le même canal EXI, depuis le premier jour. Inoffensif sous l'émulateur, dont le
-slot B *est* un Gecko. Demander ce que l'instrument **occupe**, pas seulement ce
-qu'il imprime.
+**An instrument that is certain to fire on a normal condition is not an
+instrument.** The zero-byte allocation report fired on every boot, on a
+condition the ROM guarantees, and latched the "report once" flag — so a real
+out-of-memory would have been silent. A false positive does not merely add
+noise; it can consume the instrument.
 
-**Un changement de l'endroit où l'instrument écrit est un changement de
-l'instrument.** Le tamponnage des balises pour supprimer une vraie concurrence
-carte a fait perdre exactement les balises que le plantage devait laisser. Ça
-mérite le même scepticisme qu'une modification du code mesuré.
+**Ask what can be decided off-console first.** A log line names an address; the
+ROM on disk can say whether those bytes exist at all, whether the container
+format is right, and whether the table is sound. Three hypotheses about the
+undecompressible asset were eliminated in one minute of scripting, with no
+hardware run at all. A console run costs a session.
 
-**Dolphin est indulgent là où le portage diffère le plus.** Il n'émule pas la
-MMU pour du homebrew : lire l'adresse 4 ou 0xDEADBEE0 y réussit tranquillement.
-Les caches, l'alignement, l'EXI sont dans le même cas. **Les trois défauts
-matériels de la journée sont tous dans cette catégorie**, et aucun n'était
-reproductible sous l'émulateur. Quand un symptôme n'existe que sur console, ne
-pas insister avec l'émulateur : instrumenter la console, et lire l'écran de
-plantage — une photographie de la télévision a donné en une fois ce que quatre
-runs instrumentés n'avaient pas donné.
-
-
-### Symptômes ouverts, non encore mesurés
-
-- **Le carton « 1 » s'affiche derrière chaque personnage** de l'écran de
-  sélection. `G_SETCIMG` n'est plus un candidat : la mesure a montré que les
-  deux seules cibles sont le framebuffer et le Z-buffer, sans cible hors écran.
-  Restent le cache de textures rendant la même tuile à huit appelants, ou le
-  chemin des sprites. L'instrument existe : `cover` nomme la primitive la plus
-  large avec sa texture et son combineur ; restreint aux texrects de cet écran,
-  il tranche en une exécution. **Ne pas corriger avant d'avoir mesuré.**
-- **Sprites du repli CPU hors champ à gauche** : `cpu box (-398,38)-(-196,63)
-  slot2 bb1`. La boîte écran est négative, donc l'ancre du billboard ou la
-  projection du repli place le quad à gauche de l'écran.
-- **Un gel après plusieurs appuis sur START**, menant assez loin dans les
-  menus. Le heartbeat s'arrête complètement, donc c'est le thread de boot
-  lui-même qui ne tourne plus. Non reproductible sur quatre appuis. À instruire
-  avec `gc_stack_overflowed`, le `blocked at` du thread de jeu et les paires
-  entrée/sortie de `gc_gfx_run_dl`.
+**Dolphin is forgiving exactly where the port differs most.** It does not
+emulate the MMU for homebrew: reading address 4 or 0xDEADBEE0 succeeds quietly.
+Caches, alignment and EXI are in the same position. **All the hardware defects
+of that day are in that category**, and none was reproducible under the
+emulator. That is why the emulator was ruled out entirely on 2026-09-04: when a
+symptom exists only on console, instrument the console and read the crash screen
+— a photograph of the television gave in one go what four instrumented runs had
+not.

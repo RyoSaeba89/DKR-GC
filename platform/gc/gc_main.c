@@ -201,6 +201,20 @@ static void gc_heartbeat(u32 ticks) {
            (unsigned) gGcAiCallbacks, (unsigned) gGcAiUnderruns,
            (unsigned) gGcAiPushed, (unsigned) gGcAiRingUsed, (unsigned) gGcAiRejected,
            (unsigned) gGcAiRefusedFull);
+    /* The shape of the silence, not just its total: how many separate dropouts,
+     * the longest run of silent frames in one DMA block, how empty the ring got
+     * when the consumer looked, and the longest the producer left it unfed.
+     * `ringMin` and `ring` disagreeing is the whole point -- `ring` is sampled
+     * by the producer right after it fills. Reset each beat except ringMin's
+     * floor, so a beat's numbers describe that beat. */
+    gc_log("\n           ai drops %u events, longest %u frames, ringMin %u, gap %u cb",
+           (unsigned) gGcAiUnderEvents, (unsigned) gGcAiUnderMax,
+           (unsigned) (gGcAiRingMin == 0xFFFFFFFFu ? 0 : gGcAiRingMin),
+           (unsigned) gGcAiPushGapMax);
+    gGcAiUnderEvents = 0;
+    gGcAiUnderMax = 0;
+    gGcAiRingMin = 0xFFFFFFFFu;
+    gGcAiPushGapMax = 0;
     gc_log("\n           n64 io: %u reads, %u writes, %u unknown (last %08x) | asserts %u",
            (unsigned) gGcIoReads, (unsigned) gGcIoWrites, (unsigned) gGcIoUnknown,
            (unsigned) gGcIoLastUnknown, (unsigned) gGcAsserts);

@@ -128,6 +128,14 @@ static u32 frames_to_game(u32 frames) {
  * `under`. */
 u32 gGcAiCallbacks;
 u32 gGcAiUnderruns;
+/* Underrun *events* rather than frames, the longest single run, how empty the
+ * ring gets when the consumer looks, and the longest the producer has ever
+ * left it unfed. See the note in dma_callback. */
+u32 gGcAiUnderEvents;
+u32 gGcAiUnderMax;
+u32 gGcAiRingMin = 0xFFFFFFFFu;
+u32 gGcAiPushGapMax;
+static u32 sCbSincePush;
 u32 gGcAiPushed;
 u32 gGcAiRingUsed;
 u32 gGcAiRejected;
@@ -145,18 +153,51 @@ static void dma_callback(void) {
     u8 *buf = sDmaBuf[sDmaIndex];
     Frame *out = (Frame *) buf;
     u32 i;
+#ifdef GC_DEBUG
+    u32 runHere = 0;
+    u32 usedAtEntry = ring_used();
+#endif
 
 #ifdef GC_DEBUG
     gGcAiCallbacks++;
+
+    /*
+     * How close to empty the ring actually runs, and whether the silence comes
+     * in one lump or in scattered single frames.
+     *
+     * `under` alone said 130 to 265 silent frames per heartbeat -- 0.3 % of the
+     * output -- while `ring` said 2040 frames were buffered. Both cannot be
+     * describing the same instant, and a total cannot tell a burst from a
+     * sprinkle: 256 isolated zero frames are 256 clicks a second, one run of
+     * 256 is a single 5 ms dropout, and they need different fixes. So count the
+     * events, keep the longest run, and record the depth at the moment the
+     * consumer looks -- `ring` is sampled by the *producer*, after it has just
+     * filled the ring, which is the one moment it is guaranteed to look full.
+     */
+    if (usedAtEntry < gGcAiRingMin) {
+        gGcAiRingMin = usedAtEntry;
+    }
+    if (++sCbSincePush > gGcAiPushGapMax) {
+        gGcAiPushGapMax = sCbSincePush;
+    }
 #endif
 
     for (i = 0; i < DMA_FRAMES; i++) {
         if (sRingRead != sRingWrite) {
             out[i] = sRing[sRingRead];
             sRingRead = (sRingRead + 1) % RING_FRAMES;
+#ifdef GC_DEBUG
+            if (runHere > gGcAiUnderMax) {
+                gGcAiUnderMax = runHere;
+            }
+            runHere = 0;
+#endif
         } else {
 #ifdef GC_DEBUG
             gGcAiUnderruns++;
+            if (runHere++ == 0) {
+                gGcAiUnderEvents++;
+            }
 #endif
             /* Underrun. Silence is the right answer: repeating the last frame
              * turns a dropout into a buzz, which is far more audible. */
@@ -164,6 +205,12 @@ static void dma_callback(void) {
             out[i].r = 0;
         }
     }
+
+#ifdef GC_DEBUG
+    if (runHere > gGcAiUnderMax) {
+        gGcAiUnderMax = runHere;
+    }
+#endif
 
     DCFlushRange(buf, DMA_BYTES);
     AUDIO_InitDMA((u32) buf, DMA_BYTES);
@@ -348,6 +395,7 @@ s32 osAiSetNextBuffer(void *buf, u32 len) {
 
 #ifdef GC_DEBUG
     gGcAiRingUsed = ring_used();
+    sCbSincePush = 0;
 #endif
 
     /* Carry the leftover fraction into the next buffer. */
