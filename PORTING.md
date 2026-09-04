@@ -2665,6 +2665,69 @@ the render mode in force with `zcmp`, `zupd` and the alpha-compare mode
 decoded, next to its box and its UV span. One run says whether the glyphs are
 being depth-killed, alpha-killed, or neither.
 
+### The crackle was the resampler (2026-09-04)
+
+A recording of the television settled it, and not in the way the recording
+itself was expected to.
+
+**What the recording ruled out.** No sample-level discontinuity survives a
+phone microphone and an AAC encoder, so the click counter could not be read
+from it. But the *modulation* of the high band can: the envelope above 8 kHz
+peaks at 5 to 14 Hz and nowhere else. **There is no peak at 25 Hz (the audio
+frame), 50 Hz (the retrace) or 187 Hz (the DMA block).** 5 to 14 Hz is the
+music's own note rate. So the artefact is tied to the material, not to any
+boundary in this port's plumbing — which agrees with `under` never moving off
+its initial fill for a whole run.
+
+**So the resampler itself was measured**, offline, on synthetic tones. Upsampling
+22050 to 48000 by linear interpolation leaves an image of every input tone at
+(22050 − f), attenuated only by the triangle filter's sinc²:
+
+| tone | linear (what the port did) | 32-tap windowed sinc |
+|---|---|---|
+| 1000 Hz | −52.7 dB | −51.8 dB |
+| 3000 Hz | −33.0 dB | −42.3 dB |
+| 5000 Hz | −20.7 dB | −38.6 dB |
+| 7000 Hz | −13.1 dB | −36.3 dB |
+| 9000 Hz | **−7.4 dB** | −37.8 dB |
+
+A harmonic at 9 kHz came back with an inharmonic companion at 13 kHz **seven
+decibels below it**. That is not a subtle artefact; it is a metallic buzz
+riding on the note. And it explains the shape of the complaint exactly — "only
+some notes" — because only notes with strong high harmonics produce an audible
+image.
+
+`os_ai.c`'s own header said *"Linear interpolation is enough here: the source
+is already a mix of 16 kHz-ish ADPCM samples, and the ratio is close to a small
+rational, so the artefacts sit well below the material."* **An assertion,
+never measured, wrong by thirty decibels** — and it sat at the top of the file
+being read as fact for three sessions of chasing the ring buffer.
+
+The fix is a low-pass, because the source has nothing above 11 kHz: everything
+above that in the output is an image and can be removed without touching
+anything real. A windowed-sinc polyphase interpolator is that low-pass and the
+interpolation in one step — 32 taps, 64 phases, cutoff 10.5 kHz, 64
+multiply-adds per output frame, about 3 M/s against an audio task that measures
+5 to 8 ms in 40.
+
+### What GC_TEXTEST settled (2026-09-04)
+
+The mire was put on screen and photographed, and it clears a whole family of
+hypotheses at once. On the in-race photograph every surface — track, karts,
+scenery, sky — carries a **clean two-axis gradient with the intended
+four-texel checker**. Per the knob's own legend that means **conversion, upload,
+the 4x4 GX tiling, the source stride and the texture coordinates are all
+correct**. No blocky or repeated gradient, no flat colour, no transposed axis.
+
+So the balloon that looked scrambled is not a texture-pipeline fault, and
+neither is anything else that has been blamed on textures. That is the largest
+elimination of the session and it cost one run.
+
+What it does *not* settle is the missing text, because both logs of the day were
+recorded in-race, where the game submits only **two** texrects a frame — the two
+16x16 HUD icons. The funnel has never yet seen a menu frame. That is the one
+piece of data still missing.
+
 ### Left to do
 
 Updated **2026-09-04**, after nine console sessions. The order is the one the

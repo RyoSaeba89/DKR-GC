@@ -10,9 +10,10 @@
  * The N64 could clock its DAC at whatever frequency the game asked for, and
  * DKR asks for a rate in the low twenty thousands. The GameCube's AI runs at
  * 32 or 48 kHz and nothing else, so the game's stream is resampled on the way
- * out. Linear interpolation is enough here: the source is already a mix of
- * 16 kHz-ish ADPCM samples, and the ratio is close to a small rational, so the
- * artefacts sit well below the material.
+ * out, and the quality of that resampling turned out to matter a great deal:
+ * linear interpolation leaves an image of every input tone at (22050 - f) only
+ * seven decibels down at 9 kHz, which is what "the music crackles" was. See the
+ * note on RS_TAPS.
  *
  * Two rates therefore coexist in this file, and mixing them up is the easy
  * mistake: everything the game sees -- the length it queries, the buffer it
@@ -27,6 +28,7 @@
 #include <ogc/cache.h>
 #include <ogc/machine/processor.h>
 
+#include <math.h>
 #include <string.h>
 
 #include "gc_ultra.h"
@@ -89,6 +91,47 @@
  */
 #define AUDIO_STEP_THRESHOLD 11000
 
+/*
+ * The resampler, and why linear interpolation was the crackle.
+ *
+ * The recording the user made settled it, and the arithmetic behind it is not
+ * subtle once it is written down. Upsampling 22050 to 48000 by linear
+ * interpolation leaves an image of every input tone at (22050 - f), attenuated
+ * only by the triangle filter's sinc^2. Measured, image against signal:
+ *
+ *      tone      linear            32-tap windowed sinc
+ *     1000 Hz   -52.7 dB            -51.8 dB
+ *     3000 Hz   -33.0 dB            -42.3 dB
+ *     5000 Hz   -20.7 dB            -38.6 dB
+ *     7000 Hz   -13.1 dB            -36.3 dB
+ *     9000 Hz    -7.4 dB            -37.8 dB
+ *
+ * A harmonic at 9 kHz came back with a companion at 13 kHz **seven decibels
+ * below it** -- inharmonic, metallic, and riding on top of the note. That is
+ * exactly "the music crackles, and only some notes", because only notes with
+ * strong high harmonics produce an audible image.
+ *
+ * The file's own header said "linear interpolation is enough here ... the
+ * artefacts sit well below the material". That was an assertion, never
+ * measured, and it was wrong by thirty decibels.
+ *
+ * The fix is a low-pass, because the source has nothing above 11 kHz: every
+ * component above that in the output is an image and can be removed without
+ * touching anything real. A windowed-sinc polyphase interpolator is that
+ * low-pass and the interpolation in one step. 32 taps at 64 phases costs
+ * 64 multiply-adds per output frame, about 3 M/s, which is noise against a
+ * task that measures 5 to 8 ms in 40.
+ */
+#define RS_TAPS 32
+#define RS_HALF (RS_TAPS / 2)
+#define RS_PHASES 64
+
+/* The cutoff, as a fraction of the input rate: 10.5 kHz against 11.025 kHz of
+ * input Nyquist. Written as the sinc argument's scale, so h(k) = sinc(RS_BW*k)
+ * windowed. Wide enough to keep the material, narrow enough to put the first
+ * image in the stopband. */
+#define RS_BW 0.9524f
+
 typedef struct {
     s16 l, r;
 } Frame;
@@ -105,7 +148,7 @@ static BOOL sStarted;
 
 /* Fractional read position into the game's buffer, carried across calls so the
  * resampler does not click at buffer boundaries. */
-static u32 sResamplePhase;
+static u32 sResamplePhase = (RS_HALF - 1) << 16;
 
 /* The rate loop's smoothed view of the ring depth, in 24.8 output frames. */
 static s32 sDepthAvgQ8;
@@ -113,6 +156,67 @@ static s32 sDepthAvgQ8;
 /* The largest buffer the game has handed over, in its own samples.
  * osAiGetLength reports no more backlog than this -- see the note there. */
 static u32 sLastBufferGameSamples = 1;
+
+/* The filter bank, the input tail it reaches back into, and the scratch the two
+ * are joined in. Rebuilt only when the game changes its rate. */
+static f32 sBank[RS_PHASES][RS_TAPS];
+static u32 sBankRate;
+static Frame sHist[RS_TAPS];
+#define RS_WORK_FRAMES 4096
+static Frame sWork[RS_WORK_FRAMES];
+
+static s16 clamp_s16(f32 v) {
+    if (v > 32767.0f) {
+        return 32767;
+    }
+    if (v < -32768.0f) {
+        return -32768;
+    }
+    return (s16) v;
+}
+
+/*
+ * Build the polyphase bank: for phase p, the filter is a sinc delayed by p/N of
+ * a sample, windowed and normalised to unity gain so that a constant input
+ * comes out constant.
+ */
+static void resample_bank_build(void) {
+    u32 p, k;
+
+    if (sBankRate == sGameRate) {
+        return;
+    }
+    sBankRate = sGameRate;
+
+    for (p = 0; p < RS_PHASES; p++) {
+        f32 d = (f32) p / (f32) RS_PHASES;
+        f32 sum = 0.0f;
+
+        for (k = 0; k < RS_TAPS; k++) {
+            f32 t = (f32) ((s32) k - (RS_HALF - 1)) - d;
+            f32 x = RS_BW * t;
+            f32 h;
+
+            if (x > -1e-6f && x < 1e-6f) {
+                h = 1.0f;
+            } else {
+                h = sinf(3.14159265358979f * x) / (3.14159265358979f * x);
+            }
+            /* Blackman, which buys stopband depth at a little transition
+             * width -- the right trade when the stopband is where the defect
+             * lives. */
+            h *= 0.42f - 0.5f * cosf(2.0f * 3.14159265358979f * (f32) k / (f32) (RS_TAPS - 1)) +
+                 0.08f * cosf(4.0f * 3.14159265358979f * (f32) k / (f32) (RS_TAPS - 1));
+            sBank[p][k] = h;
+            sum += h;
+        }
+        if (sum != 0.0f) {
+            for (k = 0; k < RS_TAPS; k++) {
+                sBank[p][k] /= sum;
+            }
+        }
+    }
+}
 
 /*
  * How many frames are queued.
@@ -508,15 +612,40 @@ s32 osAiSetNextBuffer(void *buf, u32 len) {
     }
     pos = sResamplePhase;
 
-    while ((pos >> 16) < inFrames && ring_free() > 0) {
+    /*
+     * The work buffer: the tail of the previous push, then this one.
+     *
+     * A symmetric filter needs samples on both sides of the point it is
+     * interpolating, so the resampler runs RS_HALF input samples behind the
+     * newest one and keeps the last RS_TAPS frames to reach backwards into.
+     * That is 0.7 ms of extra delay at 22 kHz, which is nothing against the
+     * ring's 64.
+     */
+    resample_bank_build();
+    memcpy(sWork, sHist, sizeof(sHist));
+    if (inFrames > RS_WORK_FRAMES - RS_TAPS) {
+        inFrames = RS_WORK_FRAMES - RS_TAPS;
+    }
+    memcpy(&sWork[RS_TAPS], in, inFrames * sizeof(Frame));
+
+    while ((pos >> 16) + RS_HALF < RS_TAPS + inFrames && ring_free() > 0) {
         u32 i = pos >> 16;
-        u32 frac = pos & 0xFFFF;
-        u32 j = (i + 1 < inFrames) ? i + 1 : i;
+        u32 ph = ((pos & 0xFFFF) * RS_PHASES) >> 16;
+        const f32 *h = sBank[ph];
+        const Frame *s = &sWork[i - RS_HALF + 1];
         Frame *dst = &sRing[sRingWrite];
 
         if (gGcAudioMixerImplemented) {
-            dst->l = (s16) (in[i].l + (((s32) (in[j].l - in[i].l) * (s32) frac) >> 16));
-            dst->r = (s16) (in[i].r + (((s32) (in[j].r - in[i].r) * (s32) frac) >> 16));
+            f32 l = 0.0f;
+            f32 r = 0.0f;
+            u32 k;
+
+            for (k = 0; k < RS_TAPS; k++) {
+                l += h[k] * (f32) s[k].l;
+                r += h[k] * (f32) s[k].r;
+            }
+            dst->l = clamp_s16(l);
+            dst->r = clamp_s16(r);
         } else {
             dst->l = 0;
             dst->r = 0;
@@ -529,15 +658,25 @@ s32 osAiSetNextBuffer(void *buf, u32 len) {
 #endif
     }
 
+    /* Keep the last RS_TAPS frames for the next push to reach back into. */
+    memcpy(sHist, &sWork[inFrames], sizeof(sHist));
+
 #ifdef GC_DEBUG
     gGcAiRingUsed = ring_used();
     sCbSincePush = 0;
 #endif
 
-    /* Carry the leftover fraction into the next buffer. */
+    /*
+     * Carry the position into the next buffer.
+     *
+     * The work buffer shifts by inFrames between pushes -- what was
+     * sWork[RS_TAPS + inFrames] becomes sWork[RS_TAPS] -- so the position in
+     * work coordinates moves back by exactly that. It settles around RS_HALF,
+     * which is the filter's built-in delay, and never at zero.
+     */
     sResamplePhase = pos - (inFrames << 16);
-    if ((s32) sResamplePhase < 0) {
-        sResamplePhase = 0;
+    if ((s32) sResamplePhase < (s32) ((RS_HALF - 1) << 16)) {
+        sResamplePhase = (RS_HALF - 1) << 16;
     }
     return 0;
 }
