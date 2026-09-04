@@ -211,6 +211,12 @@ static void gc_heartbeat(u32 ticks) {
            (unsigned) gGcAiUnderEvents, (unsigned) gGcAiUnderMax,
            (unsigned) (gGcAiRingMin == 0xFFFFFFFFu ? 0 : gGcAiRingMin),
            (unsigned) gGcAiPushGapMax);
+    /* The rate loop, so that "the ring drains" is visible as it is corrected:
+     * the step it settles on against its nominal value, and the depth it holds.
+     * A step that sits at its clamp means the drift is larger than the loop can
+     * absorb, which would be a different defect. */
+    gc_log(" | rate step %u depth %u", (unsigned) gGcAiStep,
+           (unsigned) gGcAiDepthAvg);
     gGcAiUnderEvents = 0;
     gGcAiUnderMax = 0;
     gGcAiRingMin = 0xFFFFFFFFu;
@@ -259,6 +265,23 @@ static void gc_heartbeat(u32 ticks) {
     gc_log("           texrects %u, timg fmts %08x, tile fmts %08x\n", (unsigned) gGcTexRects,
            (unsigned) gGcTexFormats, (unsigned) gGcTileFormats);
     gc_log("           tile modes (cmt<<2|cms) %08x\n", (unsigned) gGcTileModes);
+    /* Where the rectangles go. `drawn` equal to `texrects` with nothing on the
+     * screen means the loss is in the blend or the combiner; `offscreen` equal
+     * to it means the coordinates. `first` is there because a plausible number
+     * is not evidence. */
+    gc_log("           texrect funnel: %u submitted = %u drawn (%u offscreen) + %u zero-area"
+           " + %u no-image + %u no-tex | first (%d,%d)-(%d,%d)\n",
+           (unsigned) gGcTexRects, (unsigned) gGcTrDrawn, (unsigned) gGcTrOffScreen,
+           (unsigned) gGcTrZeroArea, (unsigned) gGcTrNoImage, (unsigned) gGcTrNoTex,
+           (int) gGcTrFirstBox[0], (int) gGcTrFirstBox[1], (int) gGcTrFirstBox[2],
+           (int) gGcTrFirstBox[3]);
+    /* Sixteen consecutive frames of emitted triangles. An alternation here says
+     * the strobe is upstream of the renderer; a flat row says it is inside it. */
+    gc_log("           tris out, last 16 frames:");
+    for (op = 0; op < 16; op++) {
+        gc_log(" %u", (unsigned) gGcTrisOutHist[(gGcTrisHistPos + op) % 16]);
+    }
+    gc_log("\n");
     for (op = 0; op < gGcStateDbgCount; op++) {
         gc_log("           st%u omH %08x omL %08x cc %08x %08x | zcmp%u zupd%u forcebl%u decal%u"
                " cvgxa%u cyc%u\n",
@@ -485,6 +508,26 @@ int main(void) {
      * boot that dies before the first frame is exactly the failure a user on
      * hardware cannot otherwise report. */
     boot_step("video ok (%dx%d)", rmode->fbWidth, rmode->xfbHeight);
+
+    /*
+     * The whole geometry of the picture, in one line.
+     *
+     * "Every texture in the game is far too smooth" has two candidate causes
+     * and they are not distinguishable on a television: the EFB copy's
+     * deflicker filter, which blurs vertically across three scanlines by
+     * design and which libogc turns on for every interlaced mode; and the fact
+     * that the game's 320x264 coordinate space is being magnified onto a
+     * 640x528 EFB, so textures authored for one texel per pixel are sampled
+     * bilinearly at 2x. Both are plausible, and the port had never printed
+     * either. `vfilter` non-flat and `aa 1` name the first; a scale of 2.00
+     * names the second.
+     */
+    boot_step("video: efb %dx%d xfb %dx%d vi %d, aa %d, vfilter %d %d %d %d %d %d %d",
+              rmode->fbWidth, rmode->efbHeight, rmode->fbWidth, rmode->xfbHeight,
+              rmode->viHeight, (int) rmode->aa,
+              (int) rmode->vfilter[0], (int) rmode->vfilter[1], (int) rmode->vfilter[2],
+              (int) rmode->vfilter[3], (int) rmode->vfilter[4], (int) rmode->vfilter[5],
+              (int) rmode->vfilter[6]);
 
     osInitialize();
     boot_step("ultra ok");

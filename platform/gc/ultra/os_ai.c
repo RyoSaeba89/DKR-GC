@@ -65,6 +65,20 @@
  */
 #define RING_FRAMES 8192
 
+/*
+ * The depth the rate loop steers the ring towards, in output frames.
+ *
+ * 3072 frames is 64 ms, and it is chosen against two measurements rather than
+ * as a round number. It is deep enough that the twelve callbacks between two
+ * pushes at the worst normal cadence never reach the bottom, and it absorbs
+ * most of what a level load costs -- the log shows the producer going quiet for
+ * `gap 17` and `gap 18` callbacks three times in a sixty-second run, which is
+ * the one dropout this does not cover. It is also *less* latency than the port
+ * had before: the ring used to settle wherever the drift left it, around 5400
+ * frames, which is the 112 ms this document has been quoting.
+ */
+#define RING_TARGET 3072
+
 typedef struct {
     s16 l, r;
 } Frame;
@@ -82,6 +96,9 @@ static BOOL sStarted;
 /* Fractional read position into the game's buffer, carried across calls so the
  * resampler does not click at buffer boundaries. */
 static u32 sResamplePhase;
+
+/* The rate loop's smoothed view of the ring depth, in 24.8 output frames. */
+static s32 sDepthAvgQ8;
 
 /* The largest buffer the game has handed over, in its own samples.
  * osAiGetLength reports no more backlog than this -- see the note there. */
@@ -135,6 +152,10 @@ u32 gGcAiUnderEvents;
 u32 gGcAiUnderMax;
 u32 gGcAiRingMin = 0xFFFFFFFFu;
 u32 gGcAiPushGapMax;
+/* The rate loop's two state variables, so the heartbeat can show it working:
+ * the corrected 16.16 step and the smoothed ring depth it is steering. */
+u32 gGcAiStep;
+u32 gGcAiDepthAvg;
 static u32 sCbSincePush;
 u32 gGcAiPushed;
 u32 gGcAiRingUsed;
@@ -368,8 +389,71 @@ s32 osAiSetNextBuffer(void *buf, u32 len) {
         }
     }
 
-    /* 16.16 fixed point increment through the source buffer. */
-    step = (u32) (((u64) sGameRate << 16) / OUTPUT_RATE_HZ);
+    /*
+     * The resampling step, corrected for the drift between the two clocks.
+     *
+     * This is the crackle, and the tenth session measured it exactly. On the
+     * user's PAL console the game emits one audio frame every two retraces --
+     * 25 a second -- of `frameSamples` samples each, and `frameSamples` sits at
+     * **880**. That is 22 000 samples a second. The resampler was converting
+     * them as if they were 22 050, because that is what `osAiSetFrequency` was
+     * told, so it produced 47 891 output frames a second against a DAC that
+     * consumes exactly 48 000.
+     *
+     * A 0.23 % shortfall, which is 109 frames a second. The log shows the ring
+     * draining at 136:
+     *
+     *     ringMin 2299 -> 1525 -> 1907 -> 878 -> 1510 -> ... -> 342 -> 247 -> 124
+     *
+     * and then sticking there, at which point every callback comes up a
+     * fraction of a block short. The signature is unmistakable once the
+     * instrument reports the shape: `ringMin 247, longest 9` and `ringMin 124,
+     * longest 132` -- both exactly `256 - longest`, one partial DMA block, ten
+     * to sixteen times a second. Ten clicks a second is what "ça craque"
+     * sounds like.
+     *
+     * On the N64 this cannot happen, and that is why the game gets away with
+     * it: there is no fixed-rate consumer. The AI plays whatever buffer the
+     * game hands it, so an undersupply of 0.23 % simply means the music runs
+     * 0.23 % slow and nobody can hear it. Here libogc's DAC is a real clock.
+     *
+     * Fixing `sGameRate` to 22 000 would work on this console and be wrong on
+     * the next one: `frameSamples` is derived from the video rate and the
+     * game's own rounding (`& ~0xf`), so it differs between PAL and NTSC and
+     * moves within a session. What is right is to stop trusting the nominal
+     * rate at all and steer on the one quantity that states the truth -- how
+     * deep the ring actually is.
+     *
+     * So: a slow proportional loop on the ring depth, smoothed over about
+     * sixty pushes so that it tracks the drift and not the jitter, clamped to
+     * +/- 1.5 % so that a bug here can never become a pitch bend. 0.23 % is a
+     * pitch error of four cents, which is inaudible; a dropout ten times a
+     * second is not.
+     */
+    {
+        s32 base = (s32) (((u64) sGameRate << 16) / OUTPUT_RATE_HZ);
+        s32 used = (s32) ring_used();
+        s32 err, corr, maxCorr;
+
+        if (sDepthAvgQ8 == 0) {
+            sDepthAvgQ8 = used << 8; /* no ramp on the first push */
+        }
+        sDepthAvgQ8 += ((used << 8) - sDepthAvgQ8) >> 6;
+
+        err = (sDepthAvgQ8 >> 8) - RING_TARGET;
+        corr = err / 8;
+        maxCorr = base / 64;
+        if (corr > maxCorr) {
+            corr = maxCorr;
+        } else if (corr < -maxCorr) {
+            corr = -maxCorr;
+        }
+        step = (u32) (base + corr);
+#ifdef GC_DEBUG
+        gGcAiStep = step;
+        gGcAiDepthAvg = (u32) (sDepthAvgQ8 >> 8);
+#endif
+    }
     pos = sResamplePhase;
 
     while ((pos >> 16) < inFrames && ring_free() > 0) {

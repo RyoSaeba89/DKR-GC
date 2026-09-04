@@ -2407,6 +2407,73 @@ plus `cpu box` already report it.
 **These four are now the whole open list.** Items 1 and 2 are independent; 3, 4
 and the "1" card are very likely one defect.
 
+### The crackle: the two clocks were 0.23 % apart (2026-09-04)
+
+The tenth session's instrument named it in one run, and the shape of the number
+is what did it.
+
+```
+ai drops 15 events, longest 9 frames, ringMin 247, gap 8 cb
+ai drops 16 events, longest 132 frames, ringMin 124, gap 8 cb
+```
+
+`247 + 9 = 256`. `124 + 132 = 256`. **Every dropout is exactly one DMA block
+that came up short**: the callback wanted 256 frames, the ring held 247, so 247
+played and 9 were silence. Ten to sixteen of those a second is what "ça craque"
+is — not distortion, not a mixer fault, a click every 70 ms.
+
+And `ringMin` says why, read down the run:
+
+```
+2299 -> 1525 -> 1907 -> 878 -> 1510 -> 1254 -> 1119 -> 1110 -> 1116 -> 863
+     -> 734 -> 472 -> 342 -> 247 -> 124 -> 124 -> 247 -> 124 ...
+```
+
+**The ring drains, steadily, at about 136 frames a second, and then sticks on
+the floor.** The old `ring` counter had said 2040 every single beat and looked
+healthy, because it is sampled by the *producer* immediately after it has
+finished filling — the one moment it is guaranteed to look full. `ringMin`, at
+callback entry, is the consumer's view, and the two disagree by the whole
+defect.
+
+**The arithmetic.** On this PAL console the game emits one audio frame every
+two retraces — 25 a second — and `am frameSamples 880` every beat. That is
+**22 000 samples a second**. The resampler was converting them as though they
+were 22 050, because that is what `osAiSetFrequency` was told, so it produced
+47 891 output frames a second against a DAC that consumes exactly 48 000. A
+0.23 % shortfall is 109 frames a second; the log measures 136.
+
+**On the N64 this cannot happen**, and that is why the game gets away with it.
+There is no fixed-rate consumer: the AI plays whatever buffer the game hands
+it, so an undersupply of 0.23 % just means the music runs 0.23 % slow and
+nobody can hear it. Here libogc's DAC is a real clock and the difference has to
+go somewhere.
+
+Interestingly the old `RING_FRAMES` comment had already half-found this — "the
+remaining 2.4 % is the supply shortfall from `frameSamples` sitting on its
+floor, not truncation" — and then treated it as a property of the machine
+rather than as a bug with a fix.
+
+**The fix is not to write 22 000.** `frameSamples` is derived from the video
+rate and the game's own rounding (`& ~0xf`), so it differs between PAL and NTSC
+and moves within a session. What is right is to stop trusting the nominal rate
+and steer on the only quantity that states the truth: how deep the ring
+actually is. `osAiSetNextBuffer` now runs a slow proportional loop on the
+smoothed ring depth, clamped to ±1.5 % so that a bug here can never become a
+pitch bend. 0.23 % is four cents, which is inaudible; a dropout ten times a
+second is not.
+
+`RING_TARGET` is 3072 frames — 64 ms. That is **less** latency than the port
+had, because the ring used to settle wherever the drift left it, around 5400
+frames, which is the 112 ms this document has been quoting. It is also deep
+enough for the twelve callbacks that pass between two pushes at the worst
+normal cadence.
+
+**What it does not cover**, and the log is explicit about it: three times in a
+sixty-second run the producer went quiet for `gap 17` and `gap 18` callbacks —
+4 600 frames, at a level load. Those are a separate defect with a separate
+shape (`longest 256, ringMin 0`), and they are rare.
+
 ### Left to do
 
 Updated **2026-09-04**, after nine console sessions. The order is the one the
@@ -2445,17 +2512,59 @@ measurements dictate; every item carries the number that justifies it.
 
 ---
 
-**1. The audio crackle.** The one symptom with a number already attached: 126 to
-265 silent output frames per 1.2 s. The next run's `ai drops` line says whether
-that is a sprinkle of clicks or one dropout, and `ringMin` says whether the ring
-genuinely empties. Do not touch `RING_FRAMES` before reading it — 2048 and 4096
-were measured and truncate buffers.
+**1. The audio crackle — diagnosed and fixed, awaiting the ear.** See "The
+crackle: the two clocks were 0.23 % apart". The number to read in the next log
+is `rate step N depth M`: the step should settle a little below its nominal
+30105 and the depth near 3072. A step sitting on its clamp would mean a drift
+larger than the loop can absorb, which is a different defect.
 
-**2. Menu text, 2D sprites, the HUD, and the "1" card.** Four symptoms that all
-live on the texrect and sprite path, with clean texture counters, which makes
-"the texture was never loaded" and "the rectangle is in the wrong place" the two
-live hypotheses. `cover` restricted to the texrects of one screen separates them
-in a single run. **Do not fix before measuring.**
+**2. Menu text and 2D sprites — nothing at all is drawn.** Confirmed from
+console: the menu background appears, and no text and no sprite appears
+anywhere, not even a fragment at an edge. Meanwhile the log says 252 rectangles
+are submitted per frame and every texture is a cache hit. Those two facts
+cannot both be the end of the story, so the funnel between them is now counted:
+
+```
+texrect funnel: N submitted = D drawn (O offscreen) + Z zero-area + I no-image + T no-tex | first (x0,y0)-(x1,y1)
+```
+
+`drawn` equal to `submitted` with a blank screen means the loss is in the blend
+or the combiner; `offscreen` equal to it means the coordinates; a large
+`zero-area` means the game itself is hiding them, which would move the search
+into game state rather than the renderer. **Do not fix before reading it.**
+
+*(The related older symptom is still there and still unmeasured: the CPU
+fallback reports `cpu box (-329,26)-(-237,70)`, a screen box entirely to the
+left of the screen, for a billboarded batch with `anchor -528 -32 172 192`.)*
+
+**2b. The strobe.** The characters and Taj's carpet blink on and off **every
+other frame** — reported as a fast strobe, not an intermittent one. Both are
+`MODELTYPE_ANIMATED`, and the static scenery does not do it, which points at
+the animation double buffer rather than at the renderer. Two things were
+checked by reading and are *not* it: `model_instance_init` does fill both
+`vertices[0]` and `vertices[1]` (object_models.c:260-291), and `objects.c:3482`
+re-reads `curVertData` after `obj_animate` has flipped `animationTaskNum`.
+
+So it is measured instead. The heartbeat now prints the emitted triangle count
+for each of the last sixteen frames:
+
+```
+tris out, last 16 frames: 697 543 691 549 ...
+```
+
+An alternation there puts the fault upstream of the renderer — the double
+buffer, or what the game submits. A flat row puts it inside the renderer, in
+depth, blending or culling, and the next question becomes which.
+
+**2c. Every texture is too smooth.** Confirmed from console as affecting
+*textures only* — the text and the geometric edges stay sharp — which rules out
+the EFB copy's deflicker filter, since that would soften the whole picture. The
+game asks for `G_TF_BILERP` and the port maps it to `GX_LINEAR`, a four-tap
+bilinear; **the N64's is a three-tap filter** on a triangle of texels, and on
+32x32 textures magnified across a road the difference is visible. GX has no
+three-tap mode. `GC_TEXFILT` is the A/B — `0` forces point sampling, `1` forces
+linear, `2` (the default) follows the game — and which one is right is a
+judgement about how the game should look, not a measurement.
 
 **3. The asset that does not decompress.** ARAM is verified identical, and the
 failure did not recur on the build that fixed `osInvalDCache`. Watch for it; the

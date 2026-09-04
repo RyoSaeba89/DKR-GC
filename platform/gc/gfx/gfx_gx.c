@@ -687,6 +687,46 @@ u32 gGcCombineW0, gGcCombineW1;
 u32 gGcTexFormats;   /* from G_SETTIMG: how the block is fetched */
 u32 gGcTileFormats;  /* from G_SETTILE: how the texels are actually read */
 u32 gGcTexRects;
+
+/*
+ * The texrect funnel, and why "nothing is drawn" needed one.
+ *
+ * The menus draw their text and their sprites as textured rectangles, the
+ * console shows none of them, and every counter that could have explained it is
+ * clean: `tex asks = hits`, no NULL texture, no unhandled format, no missing
+ * palette, and 252 rectangles submitted per frame. So the rectangles are being
+ * asked for and the textures are being found -- and something between those two
+ * facts and the screen is losing them.
+ *
+ * There are five places a rectangle can disappear and they need different
+ * fixes, so each gets a counter: a zero-area rectangle the game itself hides, a
+ * tile with no image behind it, a texture that would not convert, a rectangle
+ * whose box lands entirely outside the game's 320x264 screen, and one that is
+ * actually drawn. If `drawn` is 252 and nothing is on screen, the loss is in
+ * the blend or the combiner and not in the geometry; if `offscreen` is 252,
+ * it is the coordinates.
+ *
+ * `first` carries the box of the first rectangle drawn in the frame, in game
+ * pixels, because a number that is merely *plausible* is not evidence -- the
+ * coordinates have to be looked at.
+ */
+u32 gGcTrZeroArea, gGcTrNoImage, gGcTrNoTex, gGcTrOffScreen, gGcTrDrawn;
+s32 gGcTrFirstBox[4];
+
+/*
+ * The last sixteen frames' emitted triangle counts.
+ *
+ * The characters and Taj's carpet strobe on and off every other frame, and
+ * "every other frame" splits the search in half before anything else does: if
+ * the geometry is submitted every frame, the fault is in the drawing -- depth,
+ * blending, culling; if it is submitted on alternate frames only, the fault is
+ * upstream, in the animation double buffer or in what the game hands the
+ * renderer. A single total cannot show an alternation. Sixteen consecutive
+ * totals show it at a glance.
+ */
+#define TRIS_HIST 16
+u32 gGcTrisOutHist[TRIS_HIST];
+u32 gGcTrisHistPos;
 u32 gGcTexW, gGcTexH;
 /* The raw words of the last G_SETTILE and G_SETTILESIZE, and of the last
  * G_TEXRECT with its two G_RDPHALF followers. Decoding these by hand is what
@@ -1295,8 +1335,31 @@ static void convert_to_rgba8(const u8 *src, u32 fmt, u32 siz, u32 width, u32 hei
  * printf.c, weather.c and fade_transition.c -- and everything here used to be
  * sampled GX_NEAR anyway.
  */
+/*
+ * GC_TEXFILT: 0 forces point sampling, 1 forces linear, 2 follows the game.
+ *
+ * "Every texture in the game is far too smooth, while the text and the
+ * geometric edges stay sharp" -- reported from console, and it is a real
+ * difference rather than an impression. The game asks for G_TF_BILERP
+ * (`omH 00182c0f`, bits 12..13 = 2) and this maps it to GX_LINEAR, which is a
+ * four-tap bilinear. **The N64's is a three-tap filter** on a triangle of
+ * texels, and on 32x32 textures magnified across a whole road it reads visibly
+ * sharper. GX has no three-tap mode, so the choice is between a filter that is
+ * softer than the original and one that is harder, and it is not mine to make
+ * by assertion. The knob is the A/B; the default keeps the game's request.
+ */
+#ifndef GC_TEXFILT
+#define GC_TEXFILT 2
+#endif
+
 static u8 tex_filter(void) {
+#if GC_TEXFILT == 0
+    return GX_NEAR;
+#elif GC_TEXFILT == 1
+    return GX_LINEAR;
+#else
     return ((sOtherModeH >> 12) & 3) != 0 ? GX_LINEAR : GX_NEAR;
+#endif
 }
 
 /* G_MDSFT_TEXTLUT, bit 14, two bits: G_TT_NONE 0, G_TT_RGBA16 2, G_TT_IA16 3. */
@@ -3502,17 +3565,42 @@ static void gfx_tex_rect(u32 w0, u32 w1, u32 stWord, u32 dWord) {
     f32 w, h, u0, v0, u1, v1, uScale, vScale, uOff, vOff;
 
     if (lrx < ulx || lry < uly) {
+#ifdef GC_DEBUG
+        gGcTrZeroArea++;
+#endif
         return; /* DKR emits zero-area rectangles for hidden interface pieces */
     }
     if (!tile_image(t, &img)) {
+#ifdef GC_DEBUG
+        gGcTrNoImage++;
+#endif
         return;
     }
 
     tex = texture_get(img.addr, t->fmt, t->siz, img.width, img.height, img.stride, img.swapOdd,
                       img.tlutAddr, cm_to_gx(t->cms), cm_to_gx(t->cmt), tex_filter());
     if (tex == NULL) {
+#ifdef GC_DEBUG
+        gGcTrNoTex++;
+#endif
         return;
     }
+
+#ifdef GC_DEBUG
+    /* Counted, not skipped: the scissor is GX's job and a rectangle that pokes
+     * in from outside is legitimate. What matters is how many are *entirely*
+     * outside, which is not a thing that happens on purpose. */
+    if (lrx < 0.0f || lry < 0.0f || ulx > sGameWidth || uly > sGameHeight) {
+        gGcTrOffScreen++;
+    }
+    if (gGcTrDrawn == 0) {
+        gGcTrFirstBox[0] = (s32) ulx;
+        gGcTrFirstBox[1] = (s32) uly;
+        gGcTrFirstBox[2] = (s32) lrx;
+        gGcTrFirstBox[3] = (s32) lry;
+    }
+    gGcTrDrawn++;
+#endif
 
     w = lrx - ulx + 1.0f;
     h = lry - uly + 1.0f;
@@ -3781,7 +3869,16 @@ static void run_dl(const GfxCmd *dl) {
     gGcTrisBehind = 0;
     gGcTrisNearOnly = 0;
     gGcTrisCulled = 0;
+    /* Keep the frame that is ending before zeroing it, so the heartbeat can
+     * show an alternation rather than a single total. */
+    gGcTrisOutHist[gGcTrisHistPos] = gGcTrisOut;
+    gGcTrisHistPos = (gGcTrisHistPos + 1) % TRIS_HIST;
     gGcTrisOut = 0;
+    gGcTrZeroArea = 0;
+    gGcTrNoImage = 0;
+    gGcTrNoTex = 0;
+    gGcTrOffScreen = 0;
+    gGcTrDrawn = 0;
     gGcTrinCmds = 0;
     gGcTrinHw = 0;
     gGcTrinCpu = 0;

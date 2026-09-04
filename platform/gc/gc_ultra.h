@@ -164,6 +164,17 @@ extern u32 gGcFills, gGcFillColor, gGcFillRect[4];
  * (fmt << 2) | siz; how many textured rectangles it drew; and the last tile's
  * size in texels. */
 extern u32 gGcTexFormats, gGcTileFormats, gGcTexRects, gGcTexW, gGcTexH;
+
+/* Where the frame's textured rectangles went: submitted, actually drawn, drawn
+ * entirely outside the game's screen, and the three ways one is dropped before
+ * it reaches GX. Plus the box of the first one drawn, in game pixels. */
+extern u32 gGcTrZeroArea, gGcTrNoImage, gGcTrNoTex, gGcTrOffScreen, gGcTrDrawn;
+extern s32 gGcTrFirstBox[4];
+
+/* Emitted triangles for each of the last sixteen frames, oldest at
+ * gGcTrisHistPos. A per-frame alternation is visible here and in no total. */
+extern u32 gGcTrisOutHist[16];
+extern u32 gGcTrisHistPos;
 extern u32 gGcTileModes;
 
 /* What a textured batch actually resolved to: see texdbg_note in gfx_gx.c.
@@ -244,6 +255,10 @@ extern u32 gGcAiCallbacks, gGcAiUnderruns, gGcAiPushed, gGcAiRingUsed;
  * one DMA block, how empty the ring is when the consumer looks (not when the
  * producer does), and the longest run of callbacks with no push at all. */
 extern u32 gGcAiUnderEvents, gGcAiUnderMax, gGcAiRingMin, gGcAiPushGapMax;
+/* The rate loop that holds the ring at RING_TARGET against the drift between
+ * the game's supply and the DAC's 48 kHz: the corrected 16.16 resampling step
+ * and the smoothed depth it is steering. */
+extern u32 gGcAiStep, gGcAiDepthAvg;
 extern u32 gGcAiRejected;
 extern u32 gGcAiRefusedFull;
 extern u32 gGcAiOffers, gGcAiOfferedFrames, gGcAiGameRate;
