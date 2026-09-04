@@ -2728,6 +2728,84 @@ recorded in-race, where the game submits only **two** texrects a frame — the t
 16x16 HUD icons. The funnel has never yet seen a menu frame. That is the one
 piece of data still missing.
 
+### Where this stands, end of 2026-09-04 — read this first
+
+**The state of the card.** What is physically on the SD card is `a0cb49d2`, a
+**diagnostic** build with `GC_TEXTEST=1`: it renders every texture as a colour
+mire and looks broken on purpose. The resampler fix below was built and never
+copied — `dist/dkr/dkr.dol`, md5 `3a7447a4`, `GC_TEXTEST=0`, real textures —
+and **has never run on hardware**. Copy it before drawing any conclusion about
+the audio.
+
+**What was actually fixed today, each with the measurement that says so.**
+
+| Fix | Evidence |
+|---|---|
+| `osInvalDCache` discarding a neighbour's dirty cache lines | the asset that would not decompress has not recurred since |
+| The zero-byte allocation report consuming the only crash report | `mm:` line instead of a record; the report is free for a real failure |
+| The audio **drift** — the resampler assumed 22050 where the game supplies 22000 | dropouts went from 126–265 silent frames per beat to **zero for a whole run**; `ringMin` from 124 to 2400+ |
+| The log filling and dropping the crash report | 24 KB reserved, body wraps; verified wrapping twice in a run with no loss |
+| The resampler's **images** — linear interpolation, −7.4 dB at 9 kHz | measured offline against a 32-tap windowed sinc: −37.8 dB. **Not yet run on hardware** |
+
+**What was eliminated, which is worth as much.** Each of these was a live
+hypothesis and each is now closed:
+
+- the ARAM asset image (reads back byte-identical to what was uploaded);
+- asset decompression as a class (**all 3350** compressed assets in the ROM
+  decompress offline against the port's exact container);
+- pool exhaustion (317 of 1600 slots, 2.4 MB largest free block);
+- the texture pipeline entirely — conversion, GX 4x4 tiling, source stride,
+  coordinates — by `GC_TEXTEST` on a photograph;
+- depth and alpha state on texrects (`zcmp0 zupd0 ac0`, coordinates exact);
+- audio buffer boundaries as a source of crackle (no modulation peak at 25, 50
+  or 187 Hz).
+
+**What is still broken, and is exactly as broken as it was this morning:**
+
+1. **Menu text and the title logo do not appear.** The panels behind them do.
+2. **2D sprites are wrong** — balloons, the banana count, the in-race HUD.
+3. **Characters and Taj's carpet strobe every other frame.** Localised: the
+   geometry is submitted every frame (`tris out` flat over 16 frames), so the
+   fault is in the renderer — depth, blending or culling — and not upstream.
+4. **Every texture reads too smooth.** `GC_TEXTFILT` exists as the A/B and has
+   never been tried.
+5. **A CPU fault**, seen as libogc's register page. The crash channel is
+   repaired but has not caught one since.
+
+**The one piece of data that has never been captured**, and the reason item 1
+is no further forward: every log of the day was recorded in-race, where the
+game submits **two** texrects a frame. The texrect funnel has never seen a menu
+frame. Ten seconds sitting in a menu before starting a race would produce it.
+
+### Four things this evening did wrong, in method
+
+Written down because they cost the user nine hardware runs for one visible
+change, and because the same traps are the ones this document keeps recording.
+
+**Instruments were shipped faster than fixes.** Nine builds went to the card;
+one of them changed something the user could see. Every run costs the user a
+card swap, a boot and a session of their evening, and that budget was spent
+mostly on my visibility rather than on their game.
+
+**A question was asked whose answer the log already contradicted.** "Is
+anything drawn at all?" was put to the user, who answered "nothing", and the
+funnel in the very next run said `35 submitted = 35 drawn (0 offscreen)` at
+glyph-sized boxes. Reading the log first would have replaced the question with
+a better one.
+
+**Three hypotheses in a row were wrong, and each cost a run**: a smeared font
+texture, a depth compare leaking into the texrect path, an exhausted pool. All
+three were reasoned from a symptom rather than measured, which is the exact
+failure this document has a section about.
+
+**And the one real fix came from measuring something the code asserted.**
+`os_ai.c`'s header said linear interpolation was good enough here. It was wrong
+by thirty decibels, it had been sitting at the top of the file for the whole
+project, and three sessions were spent optimising the buffer underneath it.
+The rule was already written down — *do not correct the reference by
+reasoning*; its corollary, **do not trust your own comments as measurements**,
+was not.
+
 ### Left to do
 
 Updated **2026-09-04**, after nine console sessions. The order is the one the

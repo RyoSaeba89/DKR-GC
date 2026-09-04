@@ -112,14 +112,16 @@ the port drops.
 
 ## Known issues
 
-Reported from console, in the order they are being worked on:
+All of these are reported from console and none is solved. `PORTING.md`'s
+"Where this stands" section carries what has been eliminated for each, which is
+the useful half.
 
-- **The audio crackles.** Nothing clips any more (`clipped 0/22000`), but the
-  output ring runs dry for 126 to 265 frames out of every 57 600 — 0.2 % to
-  0.5 % of the output. The next build measures whether that is a sprinkle of
-  clicks or one 5 ms dropout, which need different fixes. Latency is about
-  112 ms on top of that.
-- **Menu text does not appear, and 2D sprites are wrong** — the balloons, the
+- **The audio crackles.** Two causes found and fixed, neither yet judged by
+  ear: the resampler assumed 22050 Hz where the game supplies 22000, draining
+  the output ring (dropouts now measure zero for a whole run); and linear
+  interpolation left resampling images only 7 dB down at 9 kHz, replaced with a
+  32-tap windowed sinc at −38 dB. Latency is 64 ms.
+- **Menu text and the title logo do not appear, and 2D sprites are wrong** — the balloons, the
   in-race banana count, the HUD, and a card labelled "1" behind each character
   on the selection screen. All of these live on the same texrect and sprite
   path, and the texture counters are clean, so they are very likely one defect.
@@ -127,8 +129,10 @@ Reported from console, in the order they are being worked on:
   surface.
 - **A rare freeze after several presses of START** in the menus, not yet
   reproducible.
-- **One asset does not decompress.** Once per session, in the menus. It did not
-  recur on the latest build; instrumented in case it comes back.
+- **One asset did not decompress.** Not seen since `osInvalDCache` stopped
+  discarding a neighbour's cache lines. All 3350 compressed assets in the ROM
+  were verified offline against the port's container, so it cannot be the
+  format.
 - Time Trial ghosts save to the emulated Controller Pak, but the full
   save-power-off-reload path has never been walked end to end.
 
