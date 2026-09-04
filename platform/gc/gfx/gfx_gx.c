@@ -714,6 +714,25 @@ u32 gGcTrZeroArea, gGcTrNoImage, gGcTrNoTex, gGcTrOffScreen, gGcTrDrawn;
 s32 gGcTrFirstBox[4];
 
 /*
+ * The first few rectangles in full: box, texture, and the coordinates used.
+ *
+ * The funnel said `35 submitted = 35 drawn (0 offscreen)` with a first box of
+ * (79,31)-(95,59) -- sixteen by twenty-eight, exactly a glyph -- while the
+ * television showed wide bars filled with a repeating warm pattern. Both cannot
+ * be right about the same rectangle, and the difference between them is the UV
+ * range: a quad that samples 0..1 of a font texture shows one glyph, a quad
+ * that samples 0..12 shows the whole font smeared twelve times, which is what
+ * a photograph of a repeating wavy pattern looks like.
+ *
+ * So the box is not enough. Each entry carries where it was drawn, which
+ * texture it resolved to and how big that texture is, and the u/v span in
+ * texture units -- x1000 because this log has no floats.
+ */
+#define TR_DBG 6
+u32 gGcTrDbgCount;
+s32 gGcTrDbg[TR_DBG][12]; /* x0 y0 x1 y1 | texAddr w h fmtsiz | u0 u1 v0 v1 (x1000) */
+
+/*
  * The last sixteen frames' emitted triangle counts.
  *
  * The characters and Taj's carpet strobe on and off every other frame, and
@@ -3618,6 +3637,22 @@ static void gfx_tex_rect(u32 w0, u32 w1, u32 stWord, u32 dWord) {
     v1 = ((tt + h * dtdy) * vScale - vOff) / (f32) img.height;
 
 #ifdef GC_DEBUG
+    if (gGcTrDbgCount < TR_DBG) {
+        s32 *e = gGcTrDbg[gGcTrDbgCount++];
+
+        e[0] = (s32) ulx;
+        e[1] = (s32) uly;
+        e[2] = (s32) lrx;
+        e[3] = (s32) lry;
+        e[4] = (s32) img.addr;
+        e[5] = (s32) img.width;
+        e[6] = (s32) img.height;
+        e[7] = (s32) ((t->fmt << 2) | t->siz);
+        e[8] = (s32) (u0 * 1000.0f);
+        e[9] = (s32) (u1 * 1000.0f);
+        e[10] = (s32) (v0 * 1000.0f);
+        e[11] = (s32) (v1 * 1000.0f);
+    }
     sCoverTexAddr = img.addr;
     sCoverFmtSiz = (t->fmt << 2) | t->siz;
     cover_note(3, (s32) (ulx * 1000.0f / sGameWidth), (s32) (uly * 1000.0f / sGameHeight),
@@ -3879,6 +3914,7 @@ static void run_dl(const GfxCmd *dl) {
     gGcTrNoTex = 0;
     gGcTrOffScreen = 0;
     gGcTrDrawn = 0;
+    gGcTrDbgCount = 0;
     gGcTrinCmds = 0;
     gGcTrinHw = 0;
     gGcTrinCpu = 0;

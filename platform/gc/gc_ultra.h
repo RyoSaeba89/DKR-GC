@@ -171,6 +171,12 @@ extern u32 gGcTexFormats, gGcTileFormats, gGcTexRects, gGcTexW, gGcTexH;
 extern u32 gGcTrZeroArea, gGcTrNoImage, gGcTrNoTex, gGcTrOffScreen, gGcTrDrawn;
 extern s32 gGcTrFirstBox[4];
 
+/* The first six rectangles in full: box, resolved texture and its size, and the
+ * u/v span x1000. A glyph-sized box whose u span is 12000 rather than 1000 is
+ * the whole font smeared across it, which is what the photographs show. */
+extern u32 gGcTrDbgCount;
+extern s32 gGcTrDbg[6][12];
+
 /* Emitted triangles for each of the last sixteen frames, oldest at
  * gGcTrisHistPos. A per-frame alternation is visible here and in no total. */
 extern u32 gGcTrisOutHist[16];

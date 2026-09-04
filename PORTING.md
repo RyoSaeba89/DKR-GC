@@ -2544,6 +2544,66 @@ sixty-second run the producer went quiet for `gap 17` and `gap 18` callbacks —
 4 600 frames, at a level load. Those are a separate defect with a separate
 shape (`longest 256, ringMin 0`), and they are rare.
 
+### The eleventh session: four answers and one refutation (2026-09-04)
+
+The instrumented build ran for 38 seconds and settled four questions.
+
+**1. The rate loop works, and the steady crackle is gone.** `ai drops 0 events`
+on every beat but three, `ringMin` sitting at 2200-3200 where it used to stick
+at 124-247, and `rate step` settling at 30007-30081 against a nominal 30105 —
+0.2 % below, which is the drift it was built to absorb, and nowhere near its
+clamp. The three remaining dropouts all carry `gap 14`, `gap 18`, `gap 19`:
+they are the level-load stalls, not the drift. **So if the audio still
+crackles, it is a different defect** — the delivery is now correct and the
+question moves to what the mixer is producing.
+
+**2. The pool is not the problem.** `317/1600 slots, used 1542 KB, free
+2522 KB, largest free 2454 KB`. Not exhausted, not fragmented, nowhere near the
+slot cliff. That hypothesis is dead.
+
+**3. Every asset loads.** `gzip 1219 ok, 0 failed` — and 0 failed in every beat
+of the run. Together with the offline sweep of all 3350 compressed assets and
+the ARAM read-back, **the asset path is settled**.
+
+**4. The strobe is inside the renderer, not upstream.** This is the one that
+halves the search:
+
+```
+tris out, last 16 frames: 60 60 60 60 60 60 60 60 60 60 60 60 60 60 60 60
+tris out, last 16 frames: 311 311 311 310 312 312 312 312 311 311 311 312 313 313 312 312
+```
+
+Flat, in every beat of the run. **The geometry is submitted every frame**, so
+nothing upstream — not the animation double buffer, not `curVertData`, not the
+scheduler's cadence — is dropping the model. What alternates is what the
+renderer does with it: depth, blending or culling.
+
+**And the refutation.** "Nothing at all is drawn" was wrong, and the log and a
+photograph disagree with it in the same direction:
+
+```
+texrect funnel: 35 submitted = 35 drawn (0 offscreen) + 0 zero-area + 0 no-image + 0 no-tex | first (79,31)-(95,59)
+```
+
+Thirty-five rectangles, all drawn, none off screen, and the first is
+sixteen by twenty-eight pixels — exactly a glyph, in exactly the right place.
+The photographs show why nobody could read them: wide bars filled with a
+repeating warm wavy pattern. **That is a font texture being sampled over and
+over instead of once**, which is a coordinate fault and not a missing asset,
+a missing texture or a missing rectangle.
+
+So the box is not enough and the funnel is extended: each of the first six
+rectangles now reports its box, the texture it resolved to with that texture's
+size, and **the u/v span in texture units**. A 16-pixel box whose u runs 0 to
+12 is the whole font smeared twelve times across one glyph; a box whose u runs
+0 to 1 means the fault is elsewhere. One run separates them.
+
+**The stop was not a caught exception.** No `dkr.crash`, no `CRASH` block, and
+the log ends after a *complete* heartbeat at 1920 retraces with `dl 1604/1604
+swap 1604/1604 copy 1604/1604` — every entry matched by an exit, so nothing was
+stuck inside a call. That is the shape of the freeze in item 9, or of the
+console being switched off, and not of the handler failing again.
+
 ### Left to do
 
 Updated **2026-09-04**, after nine console sessions. The order is the one the

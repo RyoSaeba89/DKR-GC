@@ -297,6 +297,18 @@ static void gc_heartbeat(u32 ticks) {
                (unsigned) (freeBytes >> 10), (unsigned) (largestFree >> 10),
                (unsigned) gGcGzipOk, (unsigned) gGcGzipFail);
     }
+    /* The rectangles themselves. A glyph-sized box whose u span is far past
+     * 1000 is the whole font smeared across it, which is what the photographs
+     * of the menu show. */
+    for (op = 0; op < (int) gGcTrDbgCount; op++) {
+        const s32 *e = gGcTrDbg[op];
+
+        gc_log("           tr%d (%d,%d)-(%d,%d) tex %08x %dx%d fmtsiz %02x"
+               " u %d..%d v %d..%d (x1000)\n",
+               op, (int) e[0], (int) e[1], (int) e[2], (int) e[3], (unsigned) e[4],
+               (int) e[5], (int) e[6], (unsigned) e[7], (int) e[8], (int) e[9],
+               (int) e[10], (int) e[11]);
+    }
     gc_log("           tris out, last 16 frames:");
     for (op = 0; op < 16; op++) {
         gc_log(" %u", (unsigned) gGcTrisOutHist[(gGcTrisHistPos + op) % 16]);
