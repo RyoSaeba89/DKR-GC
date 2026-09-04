@@ -34,6 +34,20 @@ extern u32 client_num, client_cnt, client_max, client_min;
 static s32 __nextSampleTime(ALSynth *drvr, ALPlayer **client);
 static s32 _timeToSamplesNoRound(ALSynth *ALSynth, s32 micros);
 
+#ifdef GC_DEBUG
+/* See the note at the head==0 test in alAudioFrame. */
+u32 gGcSynFrames;
+u32 gGcSynNoHead;
+u32 gGcSynPlayers;
+u32 gGcSynCmds;
+/* The synthesiser's own clock. It advances by frameSamples per audio frame and
+ * the sequencer converts note durations to samples through drvr->outputRate, so
+ * comparing this against wall time says directly whether the music is running
+ * at the right speed -- 22050/s is real time at DKR's rate. No listening
+ * required. */
+u32 gGcSynCurSamples;
+#endif
+
 /***********************************************************************
  * Synthesis driver public interfaces
  ***********************************************************************/
@@ -155,10 +169,22 @@ Acmd *alAudioFrame(Acmd *cmdList, s32 *cmdLen, s16 *outBuf, s32 outLen)
     lastCnt[++cnt_index] = osGetCount();
 #endif
     
+#ifdef GC_DEBUG
+    /* Port instrument. The mixer reported "0 commands" on every audio task, and
+     * that has two very different causes: the synthesiser is never asked, or it
+     * is asked and turns back here because no player was ever registered. These
+     * three counters separate them, and gGcSynPlayers (bumped in
+     * synaddplayer.c) says whether registration happened at all. */
+    gGcSynFrames++;
+    if (drvr->head == 0) {
+        gGcSynNoHead++;
+    }
+#endif
+
     if (drvr->head == 0) {
 	*cmdLen = 0;
         return cmdList;         /* nothing to do */
-    }    
+    }
 
     /*
      * run down list of clients and execute callback if needed this
@@ -224,6 +250,11 @@ Acmd *alAudioFrame(Acmd *cmdList, s32 *cmdLen, s16 *outBuf, s32 outLen)
                 
     }
     *cmdLen = (s32) (cmdlEnd - cmdList);
+
+#ifdef GC_DEBUG
+    gGcSynCmds = (u32) (cmdlEnd - cmdList);
+    gGcSynCurSamples = (u32) drvr->curSamples;
+#endif
 
     _collectPVoices(drvr); /* collect free physical voices */
     

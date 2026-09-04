@@ -1,0 +1,370 @@
+# =============================================================================
+#  Diddy Kong Racing - native GameCube port
+#
+#  Builds the decompiled game with devkitPPC against libogc2 (Extrems' fork).
+#  This Makefile deliberately shares nothing with the N64 Makefile: there is no
+#  IDO, no splat, no MIPS toolchain and no ROM linking involved. The only thing
+#  it takes from the N64 build is the asset image (see ASSET IMAGE below).
+#
+#  Usage:  make -f Makefile.gc            (from the devkitPro MSYS2 shell,
+#                                          or with DEVKITPRO set by hand)
+# =============================================================================
+
+TARGET   := dkr
+BUILD    := build/gc
+
+# ---- build knobs ------------------------------------------------------------
+# GC_EMBED_ASSETS: link the asset image into the executable instead of reading
+# it from an SD card at boot. It defaults on because it is the only route that
+# works under Dolphin -- Dolphin's GameCube EXI device list has no SD card, so
+# sd:/ and carda:/ can never resolve in GC mode. Set it to 0 for the SD build
+# that ships for Swiss on hardware; the runtime tries the embedded image first
+# and falls through to the card either way, so a 0 build is not crippled, it
+# just wants dkr.assets beside the executable.
+GC_EMBED_ASSETS ?= 1
+
+# GC_MAIN_POOL_MB: the size of the game's heap, in megabytes. On the N64 this
+# was not a number anyone chose -- the pool ran from the end of BSS to the top
+# of the console's 4 MB, which came to about 2.95 MB. Here it has to be picked,
+# because the memory above the pool belongs to libogc (framebuffers, the GX
+# FIFO, thread stacks, the FAT cache) rather than to nobody. 4 MB gives the
+# game more than the cartridge ever did and still leaves libogc room next to a
+# linked-in 12 MB asset image.
+GC_MAIN_POOL_MB ?= 4
+
+# GC_DEBUG: turn on the port's own tracing (gc_log). Off by default because it
+# prints from the retrace interrupt's thread and from the asset path, both of
+# which are hot once the game is running.
+GC_DEBUG ?= 0
+
+# GC_SDLOG: mirror gc_log and gc_fatal into sd:/dkr/dkr.log. On by default,
+# because on real hardware there is no USB Gecko and the log file is the only
+# way anything the port knows about itself gets back to the user. Costs a 16 KB
+# buffer and one open/append/close per second; with no card mounted every call
+# is a compare and a return. Set to 0 for a build that never touches the card.
+GC_SDLOG ?= 1
+
+# GC_CRASHTEST: fault on purpose two seconds into the boot thread, to exercise
+# the crash handler. It reports to the console as well as the card, so this can
+# be validated under Dolphin -- which is how the handler's own bug (a second
+# exception inside vsnprintf, with the FPU disabled) should have been caught
+# before it cost four hardware runs. Never ship this.
+GC_CRASHTEST ?= 0
+
+# GC_FORCE_PAL: pretend the console is PAL (640x576, 528-line EFB, and the
+# game's own +24 lines on every resolution). A diagnostic: the port has only
+# ever been driven on NTSC, the user's console is PAL, and Dolphin's region
+# setting does not move VIDEO_GetPreferredMode off NTSC. Never ship this.
+GC_FORCE_PAL ?= 0
+
+# GC_MEMCARD: use a card for saving at all. 0 turns off the whole storage
+# subsystem added on 2026-09-04 -- gc_storage.c reads and writes fail, nothing
+# probes or mounts a memory card, the Controller Pak reports absent (so the game
+# stays out of save_data.c's pak and rumble code) and the EEPROM lives in RAM
+# for the session. That is exactly where the port stood before that date. An
+# isolation knob for the hardware crashes, not a feature switch.
+GC_MEMCARD ?= 1
+
+# GC_DYNLIT2: 1 runs the translated calc_dynamic_lighting_for_object_2,
+# 0 turns it back into the stub it replaced. An isolation knob, not a feature.
+GC_DYNLIT2 ?= 1
+
+# GC_AUDIO_FX: let the game enable the reverb. On since A_POLEF was implemented
+# (2026-09-04) -- that filter sits inside the reverb's feedback loop, so the
+# effect could not be run without it. 0 refuses every request to enable it, and
+# is the one-build A/B for "is the reverb responsible for what I am hearing".
+GC_AUDIO_FX ?= 1
+
+# GC_NO_CULL: draw both windings instead of culling back faces. A diagnostic,
+# not a rendering option -- the repository says which Triangle flag means "draw
+# the back face" but never which winding is the front, so turning culling off
+# is how a surface that is missing because it was culled is told apart from one
+# that was never submitted.
+GC_NO_CULL ?= 0
+
+# GC_BILLBOARD: apply G_MW_BILLBOARD, which makes a vertex an offset from
+# vertex 0 -- how DKR places its sprites. On; set to 0 for an A/B.
+GC_BILLBOARD ?= 1
+
+# GC_RENDERMODE: read G_SETOTHERMODE_L's render mode -- the blender, the depth
+# test and write, the decal bias and the cutout alpha test -- instead of
+# pinning the pipeline to source-alpha blending with depth always on. Set to 0
+# to put the pinned state back while leaving the colour combiner on, which is
+# how a change in the picture is attributed to one of the two.
+GC_RENDERMODE ?= 1
+
+# GC_COMBINER: translate G_SETCOMBINE into TEV stages instead of pinning the
+# TEV to modulate-by-shade. The counterpart of GC_RENDERMODE.
+GC_COMBINER ?= 1
+
+# GC_TEXTEST: replace every texture with a coordinate mire instead of the
+# game's texels. A bring-up diagnostic: it says whether the conversion, the
+# upload and the texture coordinates are correct independently of the data
+# being fed into them.
+GC_TEXTEST ?= 0
+
+# GC_PROJ_TINT: colour geometry by which projection path drew it -- green for
+# the hardware divide, magenta for the CPU fallback. The counterpart of
+# ref-sm64gc's GFX_GX_DEBUG_PROJ_TINT.
+GC_PROJ_TINT ?= 0
+
+# ---- devkitPro / libogc2 ----------------------------------------------------
+# libogc2 lives beside libogc in the devkitPro tree and keeps its GameCube
+# tree under libogc2/gamecube (rather than libogc/lib/cube), so the paths below
+# are not interchangeable with a stock libogc build.
+ifeq ($(strip $(DEVKITPRO)),)
+  # devkitPro is commonly installed under MSYS2 rather than at C:/devkitPro, and
+  # DEVKITPRO is only exported inside its own shell. Both spellings of the path
+  # are probed because which one resolves depends on the make being used: MSYS2
+  # make understands /c/..., a native Windows make only understands C:/....
+  DEVKITPRO := $(firstword     $(patsubst %/.,%,$(wildcard /opt/devkitpro/.))     $(patsubst %/.,%,$(wildcard /c/msys64/opt/devkitpro/.))     $(patsubst %/.,%,$(wildcard C:/msys64/opt/devkitpro/.))     $(patsubst %/.,%,$(wildcard C:/devkitPro/.)))
+  ifeq ($(strip $(DEVKITPRO)),)
+    $(error DEVKITPRO is not set and devkitPro was not found. Build from the             devkitPro MSYS2 shell, or set DEVKITPRO by hand)
+  endif
+endif
+DEVKITPPC ?= $(DEVKITPRO)/devkitPPC
+
+LIBOGC     := $(DEVKITPRO)/libogc2/gamecube
+PORTLIBS   := $(DEVKITPRO)/portlibs/ppc
+ifeq ($(wildcard $(LIBOGC)/include/gccore.h),)
+  $(error libogc2 not found under $(LIBOGC). Install it from \
+          https://github.com/extremscorner/libogc2)
+endif
+
+PREFIX := $(DEVKITPPC)/bin/powerpc-eabi-
+CC     := $(PREFIX)gcc
+CXX    := $(PREFIX)g++
+LD     := $(PREFIX)gcc
+OBJCOPY:= $(PREFIX)objcopy
+ELF2DOL:= $(DEVKITPRO)/tools/bin/elf2dol
+
+# -mogc selects the GameCube (Gekko) machine profile; libogc2 ships the same
+# MACHDEP as libogc so a Wii build only differs in this line plus the libs.
+MACHDEP := -DGEKKO -mogc -mcpu=750 -meabi -mhard-float
+
+# ---- source layout ----------------------------------------------------------
+SRC_DIR      := src
+PLATFORM_DIR := platform/gc
+
+# Translation units from the decompilation that describe N64 hardware rather
+# than the game, and are replaced wholesale by $(PLATFORM_DIR):
+#   main.c      - IPL3 entrypoint and the idle/boot thread pair
+#   video.c     - VI setup and framebuffer rotation
+#   os_yield_data.c / thread0_epc.c - RSP yield buffer and the MIPS crash handler
+#   gzip.c      - asset decompression. Not hardware, but its inflate loop lives
+#                 only in src/hasm/gzip_asm.s and has no C counterpart, so the
+#                 module is replaced wholesale by one built on zlib. See
+#                 platform/gc/gc_gzip.c.
+GAME_EXCLUDE := \
+	$(SRC_DIR)/main.c \
+	$(SRC_DIR)/video.c \
+	$(SRC_DIR)/gzip.c \
+	$(SRC_DIR)/os_yield_data.c \
+	$(SRC_DIR)/thread0_epc.c \
+	$(SRC_DIR)/get_stack_pointer.c
+
+GAME_C   := $(filter-out $(GAME_EXCLUDE),$(wildcard $(SRC_DIR)/*.c))
+# hasm/ holds hand-written MIPS with C counterparts kept alongside it. The C is
+# what we compile; the .s files are never assembled for this target.
+GAME_C   += $(wildcard $(SRC_DIR)/hasm/*.c)
+
+PLATFORM_C := $(wildcard $(PLATFORM_DIR)/*.c) \
+              $(wildcard $(PLATFORM_DIR)/ultra/*.c) \
+              $(wildcard $(PLATFORM_DIR)/gfx/*.c) \
+              $(wildcard $(PLATFORM_DIR)/audio/*.c)
+
+# libultra's own audio library, which the game drives directly (alSynStartVoice,
+# alCSPPlay and friends -- 40 of the undefined symbols at the link step). It is
+# ordinary portable C sitting in the repo already; the N64 build compiles it and
+# so does this one, rather than reimplementing a synth. mips1/ is a misnomer: it
+# is C too, named for the ISA the originals targeted.
+# gu/ supplies guPerspectiveF and the matrix helpers. Its two .s files
+# (sqrtf, libm_vals) are MIPS and stay out; PowerPC has its own fsqrt.
+LIBULTRA_C := $(wildcard libultra/src/audio/*.c) \
+	$(wildcard libultra/src/audio/mips1/*.c) \
+	$(wildcard libultra/src/gu/*.c)
+
+C_FILES  := $(PLATFORM_C) $(GAME_C) $(LIBULTRA_C)
+O_FILES  := $(addprefix $(BUILD)/,$(C_FILES:.c=.o))
+DEPS     := $(O_FILES:.o=.d)
+
+# The asset image, when it is linked in rather than read from a card. It is the
+# one assembled file in the build and it holds no code: assets_blob.S is a
+# .incbin and two labels. It stays out of DEPS because there is nothing in it
+# for the dependency scanner to find.
+ifeq ($(GC_EMBED_ASSETS),1)
+  O_FILES += $(BUILD)/$(PLATFORM_DIR)/assets_blob.o
+endif
+
+# ---- flags ------------------------------------------------------------------
+# $(PLATFORM_DIR)/include comes first so its shim headers can shadow the N64
+# ones of the same name without editing include/.
+INCLUDES := \
+	-I$(PLATFORM_DIR)/include \
+	-I. \
+	-I$(PLATFORM_DIR) \
+	-Iinclude \
+	-Iinclude/PR \
+	-Ilibultra/src/audio \
+	-Isrc \
+	-I$(LIBOGC)/include \
+	-I$(PORTLIBS)/include
+
+# NON_MATCHING and AVOID_UB are the decomp's own switches for "compile the
+# portable C rather than the byte-matching quirk". A PowerPC build can never
+# match, so both are always on.
+DEFINES := \
+	-DTARGET_GC -DTARGET_OGC \
+	-DNON_MATCHING -DNON_EQUIVALENT -DAVOID_UB \
+	-D_LANGUAGE_C -D_FINALROM -DNDEBUG -DMODERN_CC \
+	-DF3DDKR_GBI \
+	-DGC_MAIN_POOL_MB=$(GC_MAIN_POOL_MB) \
+	$(if $(filter 1,$(GC_DEBUG)),-DGC_DEBUG,) 	-DGC_NO_CULL=$(GC_NO_CULL) 	-DGC_BILLBOARD=$(GC_BILLBOARD) 	-DGC_RENDERMODE=$(GC_RENDERMODE) 	-DGC_COMBINER=$(GC_COMBINER) 	-DGC_TEXTEST=$(GC_TEXTEST) 	-DGC_PROJ_TINT=$(GC_PROJ_TINT) -DGC_DYNLIT2=$(GC_DYNLIT2) -DGC_AUDIO_FX=$(GC_AUDIO_FX) -DGC_SDLOG=$(GC_SDLOG) -DGC_MEMCARD=$(GC_MEMCARD) -DGC_FORCE_PAL=$(GC_FORCE_PAL) -DGC_CRASHTEST=$(GC_CRASHTEST) \
+	-DVERSION_us_v77 \
+	-DBUILD_VERSION=VERSION_G -DBUILD_VERSION_STRING=\"2.0G\"
+
+# -fno-strict-aliasing is not optional: the game reinterprets display-list
+# words, vertex buffers and asset blobs through incompatible pointer types
+# throughout, which GCC is entitled to miscompile otherwise.
+# -fsigned-char matches the MIPS ABI the code was written against; PowerPC
+# defaults to unsigned char and a good deal of the game's arithmetic on s8
+# fields depends on the sign.
+# The game was written for a compiler where NULL was 0 and an s32 could hold a
+# pointer: include/PR/ultratypes.h says `#define NULL 0`, but GCC's stddef.h --
+# pulled in by the libogc headers after it -- redefines NULL to ((void *)0), so
+# idioms like `return NULL` from an s32 function become int/pointer conversions.
+# GCC 14 turned those into hard errors. The decomp's own Makefile already waives
+# the same three for clang (see CHECK_WARNINGS), so this follows upstream rather
+# than editing src/. Both machines are 32-bit, so the conversions are lossless.
+N64ISMS := -Wno-int-conversion -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast
+
+CFLAGS := $(MACHDEP) $(INCLUDES) $(DEFINES) \
+	-O2 -ffunction-sections -fdata-sections \
+	-fno-strict-aliasing -fsigned-char \
+	-Wall -Wno-unused-variable -Wno-unused-but-set-variable \
+	-Wno-unused-function -Wno-missing-braces -Wno-sign-compare \
+	$(N64ISMS) \
+	-include stddef.h
+
+# Objects depend on the flags they were built with, not only on their sources.
+# Flipping GC_DEBUG or GC_MAIN_POOL_MB changes what every unit compiles to, and
+# make has no way to notice that on its own -- it would relink stale objects
+# against the new ones and produce a build that matches neither setting. The
+# stamp holds the current CFLAGS and is only rewritten when they differ, so an
+# unchanged build is still a no-op.
+FLAGS_STAMP := $(BUILD)/.cflags
+$(shell mkdir -p $(BUILD); printf '%s' "$(CFLAGS)" | cmp -s - $(FLAGS_STAMP) || printf '%s' "$(CFLAGS)" > $(FLAGS_STAMP))
+
+# Header dependency tracking. These stay out of CFLAGS on purpose: CFLAGS is
+# simply-expanded, so a $* inside it is expanded where there is no stem and
+# every unit would write its dependencies over the same file.
+DEPFLAGS = -MMD -MP -MF $(BUILD)/$*.d
+
+# ---- asset image ------------------------------------------------------------
+# The game locates its asset lookup table through two symbols that the N64
+# linker script placed at ROM offsets. asset_loading.c reads them as addresses
+# and DMAs from them, so the port has to supply the same two numbers; they are
+# the `assets.lut` segment bounds from ver/splat/dkr.us.v77.yaml.
+#
+# 0xECC30 - 0xECB60 is 208 bytes, i.e. 52 four-byte entries, which matches the
+# 50 asset sections in tools/dkr_assets_tool_extract.json plus padding.
+#
+# These are specific to US 1.0 (us.v77). Another ROM revision moves them.
+ASSETS_LUT_START := 0xECB60
+ASSETS_LUT_END   := 0xECC30
+
+
+# gMainMemoryPool used to come from a linker script fragment that parked it at
+# the end of BSS, the way the N64 build did, and mempool_init_main took
+# everything from there up to RAM_END. That is wrong on this machine: the space
+# above the end of BSS is libogc's arena. The pool is a real BSS object now --
+# see platform/gc/gc_mainpool.c -- so there is no fragment to include and
+# devkitPPC's own layout is used unmodified.
+#
+# --wrap=c_default_exceptionhandler is how the crash handler gets in. libogc
+# exception vectors save the register frame and then make one ordinary C call
+# to that symbol; wrapping it lets platform/gc/gc_crash.c write the report to
+# the SD card and then hand the frame straight on to libogc's own on-screen
+# dump. The alternative -- __exception_sethandler -- takes a raw vector routine
+# to rfi to, not a C function, which is not what the usual homebrew snippet
+# claims and not something this port should be writing in assembly.
+LDFLAGS := $(MACHDEP) -Wl,--gc-sections -Wl,-Map,$(BUILD)/$(TARGET).map \
+	-Wl,--wrap=c_default_exceptionhandler \
+	-Wl,--defsym=__ASSETS_LUT_START=$(ASSETS_LUT_START) \
+	-Wl,--defsym=__ASSETS_LUT_END=$(ASSETS_LUT_END)
+LIBS    := -L$(LIBOGC)/lib -L$(PORTLIBS)/lib \
+           -lfat -logc -lz -lm
+
+# ---- temporary files --------------------------------------------------------
+# devkitPPC's gcc is a native Windows executable and puts its intermediates
+# wherever TMP points. Run under an MSYS2 make, the inherited value arrives in a
+# POSIX form it cannot use, so it falls back to C:\Windows and fails with
+# "Cannot create temporary file". Pointing it inside the build tree removes the
+# ambiguity, and a relative path works for both a POSIX and a native make
+# because gcc resolves it against the working directory.
+export TMPDIR := $(BUILD)/tmp
+export TMP    := $(TMPDIR)
+export TEMP   := $(TMPDIR)
+$(shell mkdir -p $(TMPDIR))
+
+# ---- rules ------------------------------------------------------------------
+.PHONY: all clean dist
+.SUFFIXES:
+
+all: $(BUILD)/$(TARGET).dol
+
+$(BUILD)/$(TARGET).dol: $(BUILD)/$(TARGET).elf
+	@echo "  DOL     $@"
+	@$(ELF2DOL) $< $@
+
+$(BUILD)/$(TARGET).elf: $(O_FILES)
+	@echo "  LINK    $@"
+	@$(LD) $(O_FILES) $(LDFLAGS) $(LIBS) -o $@
+
+$(BUILD)/%.o: %.c $(FLAGS_STAMP)
+	@mkdir -p $(dir $@)
+	@echo "  CC      $<"
+	@$(CC) $(CFLAGS) $(DEPFLAGS) -c $< -o $@
+
+# The asset image gets a rule of its own rather than a pattern: it is the only
+# assembled file, and what it depends on is the image, not any header.
+$(BUILD)/$(PLATFORM_DIR)/assets_blob.o: $(PLATFORM_DIR)/assets_blob.S $(BUILD)/dkr.assets $(FLAGS_STAMP)
+	@mkdir -p $(dir $@)
+	@echo "  BLOB    $(BUILD)/dkr.assets"
+	@$(CC) $(MACHDEP) -DASSETS_BLOB='"$(BUILD)/dkr.assets"' -c $< -o $@
+
+# ---- asset image ------------------------------------------------------------
+#
+# The port keeps the N64 asset layout untouched and serves it through the PI
+# DMA entry points, so the image it needs is simply the ROM itself. Shipping it
+# whole rather than carving out the asset region means every ROM offset in the
+# game's lookup table resolves without rebasing, and 12 MB still fits inside
+# ARAM's 16 MB with room to spare.
+#
+# This deliberately does not go through dkr_assets_tool: the tool exists to turn
+# assets into editable source and back again, which a port that ships them
+# unmodified has no use for. The tool is still needed once, for
+# include/asset_enums.h -- see PORTING.md.
+ROM ?= $(firstword $(wildcard baseroms/*.z64) $(wildcard ../rom/*.z64))
+
+$(BUILD)/dkr.assets: $(ROM)
+	@mkdir -p $(dir $@)
+	@if [ -z "$(ROM)" ]; then 	   echo "error: no ROM found. Put your own copy in baseroms/, or pass ROM=<path>."; 	   exit 1; 	 fi
+	@echo "  ASSETS  $@  (from $(ROM))"
+	@cp "$(ROM)" $@
+
+.PHONY: assets
+assets: $(BUILD)/dkr.assets
+
+# `dist` lays out a folder to drop on an SD card for Swiss: the executable plus
+# the asset image the game DMAs from at runtime.
+dist: all assets
+	@mkdir -p dist/dkr
+	@cp $(BUILD)/$(TARGET).dol dist/dkr/
+	@cp $(BUILD)/dkr.assets dist/dkr/
+	@echo "  DIST    dist/dkr/  -> copy to sd:/dkr/"
+
+clean:
+	@rm -rf $(BUILD) dist
+
+-include $(DEPS)

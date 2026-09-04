@@ -21,9 +21,18 @@
 #include "synthInternals.h"
 #include <os_internal.h>
 
+#ifdef GC_DEBUG
+/* Defined in mips1/synthesizer.c; see the note there. */
+extern u32 gGcSynPlayers;
+#endif
+
 void alSynAddPlayer(ALSynth *drvr, ALPlayer *client)
 {
     OSIntMask mask = osSetIntMask(OS_IM_NONE);
+
+#ifdef GC_DEBUG
+    gGcSynPlayers++;
+#endif
 
     client->samplesLeft = drvr->curSamples;
     client->next = drvr->head;

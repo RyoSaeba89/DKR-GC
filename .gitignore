@@ -81,3 +81,15 @@ tools/ido-recomp
 tools/binutils
 *.d
 treemap.html
+
+# ---- GameCube port ----------------------------------------------------------
+# Everything the GC build produces, and everything derived from a ROM. The
+# port ships no Nintendo data: dkr.assets *is* the ROM byte for byte, and a
+# GC_EMBED_ASSETS=1 dkr.dol has it linked inside.
+dist/
+*.assets
+*.dol
+*.elf
+a.out
+# Capture sessions: screenshots of the running game and multi-hundred-KB logs.
+doc/gc-capture/

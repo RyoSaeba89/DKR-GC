@@ -19,8 +19,18 @@ typedef enum MempoolFlags {
     SLOT_SAFEGUARD = (1 << 2)  // The slot is used, and marks the stopping point of a global pool clear.
 } MempoolFlags;
 
+#ifdef TARGET_GC
+// The top of the heap is not a property of the machine here. The pool is an
+// ordinary BSS object of a fixed size (platform/gc/gc_mainpool.c) rather than
+// whatever is left between the end of BSS and the top of RAM, because on the
+// GameCube that space already belongs to libogc's arena.
+u32 gc_ram_end(void);
+#define RAM_END (gc_ram_end())
+#define EXPANSION_RAM_END (gc_ram_end())
+#else
 #define RAM_END 0x80400000
 #define EXPANSION_RAM_END 0x80800000
+#endif
 #define MAIN_POOL_SLOT_COUNT 1600
 #define FREE_QUEUE_SIZE 256
 #define MEMSLOT_NONE -1

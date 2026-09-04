@@ -2,6 +2,7 @@
 
 #include "game.h"
 #include "macros.h"
+#include "PR/gu.h"
 #include "PR/os_internal_reg.h"
 #include "string.h"
 #include "structs.h"
@@ -90,8 +91,8 @@ UNUSED void mtx_to_mtxs(Mtx *m, MtxS *mi) {
     s32 ei, ef;
     s32 *ai, *af;
 
-    ai = &m->m[0][0];
-    af = &m->m[2][0];
+    ai = (s32 *) &m->m[0][0];
+    af = (s32 *) &m->m[2][0];
 
     for (i = 0; i < 4; i++) {
         for (j = 0; j < 4; j += 2) {
@@ -192,8 +193,8 @@ void mtxf_to_mtx(MtxF *mf, Mtx *m) {
     s32 e1, e2;
     s32 *ai, *af;
 
-    ai = &m->m[0][0];
-    af = &m->m[2][0];
+    ai = (s32 *) &m->m[0][0];
+    af = (s32 *) &m->m[2][0];
 
     for (i = 0; i < 4; i++) {
         for (j = 0; j < 4; j += 2) {
@@ -747,7 +748,7 @@ static u16 atan2_lookup(f32 y, f32 x) {
 s32 atan2s(s32 xDelta, s32 zDelta) {
     u16 ret;
 
-    if (xDelta == 0 && yDelta == 0) {
+    if (xDelta == 0 && zDelta == 0) {
         return 0;
     }
 

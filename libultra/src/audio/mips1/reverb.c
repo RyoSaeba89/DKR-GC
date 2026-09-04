@@ -52,7 +52,25 @@ Acmd *_saveBuffer(ALFx *r, s16 *curr_ptr, s32 buff, s32 count, Acmd *p);
 Acmd *_filterBuffer(ALLowPass *lp, s32 buff, s32 count, Acmd *p);
 f32  _doModFunc(ALDelay *d, s32 count);
 
-u8 alFXEnabled = TRUE;
+/*
+ * The reverb is off in this port, and that is a correctness decision, not a
+ * simplification.
+ *
+ * platform/gc/audio/audio_mixer.c implements fourteen of the fifteen ABI
+ * opcodes the synthesiser emits, A_POLEF included since 2026-09-04.
+ *
+ * It had to be, and this is the file that says why. Read alFxPull below: buff2
+ * is filtered and then `_saveBuffer(r, out_ptr, buff2, ...)` writes it *back
+ * into the delay line*, so the low-pass sits inside the feedback loop, not on
+ * the output tap. While the opcode was skipped the loop had no damping at all,
+ * the effect was refused outright here, and the game ran dry.
+ *
+ * The opcode is now in platform/gc/audio/audio_mixer.c, reconstructed from
+ * _init_lpfilter's coefficients rather than transcribed -- see the comment
+ * there -- so the effect is allowed again and this flag simply follows what the
+ * game asks for.
+ */
+u8 alFXEnabled = FALSE;
 
 static s32 L_INC[] = { L0_INC, L1_INC, L2_INC };
 
@@ -454,7 +472,22 @@ f32 _doModFunc(ALDelay *d, s32 count)
 }
 
 void alFxReverbSet(u8 setting) {
+#if GC_AUDIO_FX
     alFXEnabled = setting;
+#else
+    /*
+     * GC_AUDIO_FX=0 refuses the effect outright, rather than only starting with
+     * it off: the game turns it back on by itself (sound_reverb_set,
+     * src/audio.c:1074), so initialising alFXEnabled to FALSE was measurably
+     * not enough.
+     *
+     * The knob now defaults to 1 and exists as an A/B: it is the one-build
+     * answer to "is the reverb responsible for what I am hearing", which is a
+     * question this port has already had to ask twice.
+     */
+    (void) setting;
+    alFXEnabled = FALSE;
+#endif
 }
 
 u8 _alFxEnabled() {

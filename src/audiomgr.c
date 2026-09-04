@@ -76,6 +76,14 @@ u32 frameSize;
 u32 maxFrameSize;
 s32 gAudioCmdLen; // Set but not used
 
+#ifdef GC_DEBUG
+/* See the note at the frameSamples computation in __amHandleFrameMsg. */
+u32 gGcAmSamplesLeft;
+s32 gGcAmFrameSamples;
+u32 gGcAmFrameSize;
+u32 gGcAmMinFrameSize;
+#endif
+
 /**** Anti Piracy - Sets random audio frequency ****/
 s16 gAntiPiracyCRCStart;
 s8 gAntiPiracyAudioFreq = FALSE;
@@ -307,6 +315,17 @@ static u32 __amHandleFrameMsg(AudioInfo *info, AudioInfo *lastInfo) {
     if ((u32) info->frameSamples < minFrameSize) {
         info->frameSamples = minFrameSize;
     }
+
+#ifdef GC_DEBUG
+    /* Port instrument. alAudioFrame emits zero words, and the only way that
+     * happens with a registered player is outLen <= 0 on entry -- outLen is
+     * this. Note the clamp above tests (u32), so a negative frameSamples reads
+     * as a huge unsigned and slips straight past it. */
+    gGcAmSamplesLeft = (u32) samplesLeft;
+    gGcAmFrameSamples = (s32) info->frameSamples;
+    gGcAmFrameSize = frameSize;
+    gGcAmMinFrameSize = minFrameSize;
+#endif
 
     cmdp = alAudioFrame(__am.ACMDList[curAcmdList], &gAudioCmdLen, audioPtr, info->frameSamples);
 
