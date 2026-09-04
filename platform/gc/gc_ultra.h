@@ -175,7 +175,7 @@ extern s32 gGcTrFirstBox[4];
  * u/v span x1000. A glyph-sized box whose u span is 12000 rather than 1000 is
  * the whole font smeared across it, which is what the photographs show. */
 extern u32 gGcTrDbgCount;
-extern s32 gGcTrDbg[6][12];
+extern s32 gGcTrDbg[6][14];
 
 /* Emitted triangles for each of the last sixteen frames, oldest at
  * gGcTrisHistPos. A per-frame alternation is visible here and in no total. */

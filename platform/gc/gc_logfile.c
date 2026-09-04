@@ -106,12 +106,44 @@ static const char *const kLogPaths[] = {
  */
 #define LOG_FILE_SIZE (256 * 1024)
 
+/*
+ * The tail of the file belongs to the crash report, and nothing else may write
+ * into it.
+ *
+ * The eleventh hardware run cost a crash report to this. The user saw libogc's
+ * register page -- so the CPU faulted and the handler ran -- and neither the
+ * `CRASH` block nor `dkr.crash` appeared. The log was 257 066 bytes of 262 144,
+ * with its last heartbeat cut off mid-line: **the file was full**, and a full
+ * file drops everything, including the one write that mattered.
+ *
+ * That is the same failure the port has now made four times in different
+ * clothes: an instrument that stops working exactly when the thing it exists
+ * to record happens. The heartbeat had grown by a texrect funnel, a pool line
+ * and sixteen triangle counts since the size was chosen, and nothing recomputed
+ * how long a minute of it was.
+ *
+ * So the last 24 KB are reserved. The body wraps back to the top when it fills
+ * -- the most recent seconds of a run are worth more than the first, and a run
+ * that lasts long enough to wrap is one where the interesting part is the end
+ * -- and the crash report writes into the reserve, at a fixed offset, into a
+ * file that already has its clusters. It can neither be crowded out nor need an
+ * allocation.
+ */
+#define LOG_CRASH_RESERVE (24 * 1024)
+#define LOG_BODY_SIZE (LOG_FILE_SIZE - LOG_CRASH_RESERVE)
+
 static char sBuf[LOG_BUF_SIZE];
 static u32 sLen;
 static u32 sDropped;
 
 /* How far into the preallocated file the next flush writes. */
 static u32 sOffset;
+/* Where the crash report writes, inside the reserved tail; where the body
+ * restarts when it wraps, so the boot header is never overwritten; and whether
+ * it has wrapped, which the reader needs to know to read the body in order. */
+static u32 sCrashOffset;
+static u32 sHeaderEnd;
+static BOOL sWrapped;
 /* Set when preallocation failed and the log falls back to plain appending. */
 static BOOL sAppendMode;
 
@@ -182,11 +214,37 @@ static void flush_locked(void) {
         return;
     }
     if (!sAppendMode) {
-        if (sOffset + len > LOG_FILE_SIZE) {
-            /* The preallocated file is full. Stop rather than grow it: growing
-             * is the operation this whole scheme exists to avoid. */
-            len = 0;
-            dropped += sLen;
+        if (sCrashMode) {
+            /* The reserve. A fixed offset in a file that already has its
+             * clusters, so this write can be neither crowded out by the
+             * heartbeat nor blocked by an allocation. */
+            if (sCrashOffset == 0) {
+                sCrashOffset = LOG_BODY_SIZE;
+            }
+            if (sCrashOffset + len > LOG_FILE_SIZE) {
+                len = LOG_FILE_SIZE - sCrashOffset;
+            }
+            fseek(f, (long) sCrashOffset, SEEK_SET);
+            if (len != 0) {
+                fwrite(sBuf, 1, len, f);
+                sCrashOffset += len;
+            }
+            sLen = 0;
+            fclose(f);
+            return;
+        }
+        if (sOffset + len > LOG_BODY_SIZE) {
+            /* Wrap rather than stop. The body is a ring: the end of a run is
+             * where its evidence is, and stopping at the top of the file threw
+             * exactly that away. The marker is a fixed string because this
+             * function also runs on the crash path, where printf is not
+             * available. */
+            static const char kWrapped[] = "\n[log wrapped]\n";
+
+            fseek(f, (long) sOffset, SEEK_SET);
+            fwrite(kWrapped, 1, sizeof(kWrapped) - 1, f);
+            sOffset = sHeaderEnd;
+            sWrapped = TRUE;
         }
         fseek(f, (long) sOffset, SEEK_SET);
     }
@@ -364,6 +422,8 @@ void gc_logfile_init(void) {
          * than to no log at all. */
         sAppendMode = (written < LOG_FILE_SIZE);
         sOffset = 0;
+        sCrashOffset = 0;
+        sWrapped = FALSE;
         sPath = kLogPaths[i];
         sReady = TRUE;
         break;
@@ -377,10 +437,16 @@ void gc_logfile_init(void) {
 
     gc_logfile_printf("=== DKR-GC ===\n");
     gc_logfile_printf("built " __DATE__ " " __TIME__ "\n");
-    gc_logfile_printf("log   %s (%u KB preallocated%s)\n", sPath,
-                      (unsigned) (LOG_FILE_SIZE / 1024),
+    gc_logfile_printf("log   %s (%u KB: %u KB body that wraps, %u KB reserved for the crash%s)\n",
+                      sPath, (unsigned) (LOG_FILE_SIZE / 1024),
+                      (unsigned) (LOG_BODY_SIZE / 1024),
+                      (unsigned) (LOG_CRASH_RESERVE / 1024),
                       sAppendMode ? ", FALLBACK: appending" : "");
     gc_logfile_flush();
+    /* Everything written up to here is the boot header, and a wrap must not
+     * overwrite it: the build stamp and which card the log landed on are what
+     * identify the run. The ring restarts below it. */
+    sHeaderEnd = sOffset;
 }
 
 /*

@@ -304,10 +304,13 @@ static void gc_heartbeat(u32 ticks) {
         const s32 *e = gGcTrDbg[op];
 
         gc_log("           tr%d (%d,%d)-(%d,%d) tex %08x %dx%d fmtsiz %02x"
-               " u %d..%d v %d..%d (x1000)\n",
+               " u %d..%d v %d..%d | omH %08x omL %08x zcmp%d zupd%d ac%d\n",
                op, (int) e[0], (int) e[1], (int) e[2], (int) e[3], (unsigned) e[4],
                (int) e[5], (int) e[6], (unsigned) e[7], (int) e[8], (int) e[9],
-               (int) e[10], (int) e[11]);
+               (int) e[10], (int) e[11], (unsigned) e[12], (unsigned) e[13],
+               (int) ((e[13] >> 4) & 1),  /* Z_CMP  */
+               (int) ((e[13] >> 5) & 1),  /* Z_UPD  */
+               (int) (e[13] & 3));        /* alpha compare mode */
     }
     gc_log("           tris out, last 16 frames:");
     for (op = 0; op < 16; op++) {

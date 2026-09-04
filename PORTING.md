@@ -2604,6 +2604,67 @@ swap 1604/1604 copy 1604/1604` — every entry matched by an exit, so nothing wa
 stuck inside a call. That is the shape of the freeze in item 9, or of the
 console being switched off, and not of the handler failing again.
 
+### The full log ate the crash report (2026-09-04)
+
+The user saw libogc's register page, so the CPU faulted and the handler ran.
+No `CRASH` block, no `dkr.crash`. The log was **257 066 bytes of 262 144**, its
+last heartbeat cut off mid-line.
+
+`flush_locked` did exactly what it was written to do:
+
+```c
+if (sOffset + len > LOG_FILE_SIZE) {
+    len = 0;                 /* the preallocated file is full */
+    dropped += sLen;
+}
+```
+
+The file was full, so everything was dropped — including the one write that
+mattered. **This is the fourth time this port has built an instrument that
+stops working exactly when the thing it records happens**, after the
+framebuffer console, the buffered markers and the zero-byte allocation report.
+And the mechanism is dull: the heartbeat had grown by a texrect funnel, a pool
+line and sixteen triangle counts since 256 KB was chosen as "about a minute",
+and nothing recomputed how long a minute had become.
+
+Two changes. **The last 24 KB are reserved for the crash report** — a fixed
+offset in a file that already has its clusters, so the report can neither be
+crowded out by the heartbeat nor blocked by an allocation. And **the body wraps**
+instead of stopping: a run long enough to fill the log is one whose evidence is
+at the end, and stopping at the top threw exactly that away. The boot header is
+kept out of the ring, because the build stamp is what identifies the run.
+
+### The text is not smeared, it is invisible (2026-09-04)
+
+The reading of the photographs in the previous section was wrong, and the user
+corrected it: **the brown boxes are correct** — they are the menu panels, and
+that warm wavy pattern is the wood they are supposed to be made of. What is
+missing is the *labels inside them*, and the Diddy Kong Racing logo at the
+start.
+
+So there is no coordinate fault to find. The rectangles are drawn where they
+should be, at the size they should be, with a texture that resolved: the funnel
+says `35 submitted = 35 drawn (0 offscreen)`, the first box is sixteen by
+twenty-eight, `tex asks = hits`, no magenta, no missing palette. They are drawn
+**and invisible**, which leaves the blender, the alpha compare and the depth
+test.
+
+And there is a candidate that the port's own design note contradicts.
+`gfx_set_3d_state`'s comment says "interface rectangles keep the flat path,
+which is correct rather than merely cheaper -- the RDP's fill and copy cycles do
+not test or write z either". But `gfx_tex_rect` does not call
+`gfx_set_2d_state`; it calls `gfx_set_textured_state`, which calls
+`apply_render_mode()` — so **a texrect inherits whatever the last
+`G_RDPSETOTHERMODE` asked for, including a depth compare**. A glyph drawn on top
+of 3D scenery, at the flat path's fixed z, would lose that compare and vanish
+while the scenery under it stays. That is the exact shape of "the boxes appear
+and the labels on them do not", and of a logo drawn over a 3D title screen.
+
+It is not fixed on a hypothesis. Each of the first six rectangles now reports
+the render mode in force with `zcmp`, `zupd` and the alpha-compare mode
+decoded, next to its box and its UV span. One run says whether the glyphs are
+being depth-killed, alpha-killed, or neither.
+
 ### Left to do
 
 Updated **2026-09-04**, after nine console sessions. The order is the one the

@@ -730,7 +730,7 @@ s32 gGcTrFirstBox[4];
  */
 #define TR_DBG 6
 u32 gGcTrDbgCount;
-s32 gGcTrDbg[TR_DBG][12]; /* x0 y0 x1 y1 | texAddr w h fmtsiz | u0 u1 v0 v1 (x1000) */
+s32 gGcTrDbg[TR_DBG][14]; /* x0 y0 x1 y1 | texAddr w h fmtsiz | u0 u1 v0 v1 | omH omL */
 
 /*
  * The last sixteen frames' emitted triangle counts.
@@ -3652,6 +3652,15 @@ static void gfx_tex_rect(u32 w0, u32 w1, u32 stWord, u32 dWord) {
         e[9] = (s32) (u1 * 1000.0f);
         e[10] = (s32) (v0 * 1000.0f);
         e[11] = (s32) (v1 * 1000.0f);
+        /* The render mode in force for this rectangle, which is the thing the
+         * funnel could not see. gfx_set_textured_state calls apply_render_mode,
+         * so a texrect inherits whatever the last G_RDPSETOTHERMODE asked for
+         * -- including a depth compare. A glyph drawn on top of 3D scenery with
+         * zcmp on, at the flat path's fixed z, loses the compare and vanishes
+         * while the scenery under it stays. That is the shape of "the boxes
+         * appear and the labels on them do not", and these two words settle it. */
+        e[12] = (s32) sOtherModeH;
+        e[13] = (s32) sOtherModeL;
     }
     sCoverTexAddr = img.addr;
     sCoverFmtSiz = (t->fmt << 2) | t->siz;
