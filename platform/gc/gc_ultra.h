@@ -175,6 +175,22 @@ extern s32 gGcTrFirstBox[4];
  * gGcTrisHistPos. A per-frame alternation is visible here and in no total. */
 extern u32 gGcTrisOutHist[16];
 extern u32 gGcTrisHistPos;
+
+/* The game's heap, which is otherwise unobservable: mempool reports its own
+ * failures through stubbed_printf, which is defined as nothing, and the two
+ * callers that matter (object_model_init, texture_load) use plain mempool_alloc
+ * and return NULL silently. Slots are a cliff -- once curNumSlots + 1 reaches
+ * 1600 the allocator refuses everything -- and `largest` separates "out of
+ * space" from "fragmented". Defined in gc_mainpool.c. */
+void gc_pool_report(u32 *slotsUsed, u32 *slotsMax, u32 *freeBytes, u32 *largestFree,
+                    u32 *usedBytes);
+
+/* Decompressions attempted and how many came back the wrong length. `ok`
+ * climbing is the positive statement the log never made: every compressed asset
+ * in the ROM was verified offline against this exact container, so a runtime
+ * failure here is a buffer or a pointer, never the format. Defined in
+ * gc_gzip.c. */
+extern u32 gGcGzipOk, gGcGzipFail;
 extern u32 gGcTileModes;
 
 /* What a textured batch actually resolved to: see texdbg_note in gfx_gx.c.

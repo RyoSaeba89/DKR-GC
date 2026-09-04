@@ -130,6 +130,71 @@ void thread3_verify_stack(void) {
     }
 }
 
+#ifdef GC_DEBUG
+/*
+ * The pool's health, because a failure in it is completely silent.
+ *
+ * `mempool_slot_find` reports "No more slots available" and "No suitable block
+ * found for allocation" -- through `stubbed_printf`, which `include/types.h`
+ * defines as nothing. And the two callers that matter most do not use
+ * `mempool_alloc_safe`: `object_model_init` and `texture_load` both call plain
+ * `mempool_alloc` and return NULL on failure, silently, leaving the game with a
+ * model or a texture that simply is not there.
+ *
+ * That is exactly the shape of "the menu text and the 2D sprites are missing
+ * and nothing in the log says why", so the pool stops being unobservable.
+ * Three numbers separate the three ways it fails: slots exhausted (1600 of
+ * them, and the allocator refuses *everything* once `curNumSlots + 1` reaches
+ * the maximum, which is a cliff and not a slope), space exhausted, and
+ * fragmentation -- plenty free in total but no single block big enough, which
+ * is the one a total would hide.
+ *
+ * Walked from the free list rather than the slot array, because the slot array
+ * holds unlinked spares.
+ */
+void gc_pool_report(u32 *slotsUsed, u32 *slotsMax, u32 *freeBytes, u32 *largestFree,
+                    u32 *usedBytes) {
+    extern MemoryPool gMemoryPools[POOL_COUNT];
+    const MemoryPool *pool = &gMemoryPools[POOL_MAIN];
+    const MemoryPoolSlot *slots = pool->slots;
+    s32 i = 0;
+    u32 free = 0, largest = 0, used = 0;
+    u32 guard = 0;
+
+    *slotsUsed = (u32) pool->curNumSlots;
+    *slotsMax = (u32) pool->maxNumSlots;
+    *freeBytes = 0;
+    *largestFree = 0;
+    *usedBytes = 0;
+
+    if (slots == NULL || pool->maxNumSlots == 0) {
+        return;
+    }
+
+    /* The list is walked with a bound: this runs once a second on a machine
+     * whose whole problem may be corrupt memory, and a broken nextIndex must
+     * not turn a diagnostic into a hang. */
+    while (i != MEMSLOT_NONE && guard++ < (u32) pool->maxNumSlots) {
+        const MemoryPoolSlot *s = &slots[i];
+
+        if (s->flags == SLOT_FREE) {
+            free += (u32) s->size;
+            if ((u32) s->size > largest) {
+                largest = (u32) s->size;
+            }
+        } else {
+            used += (u32) s->size;
+        }
+        i = s->nextIndex;
+    }
+
+    *freeBytes = free;
+    *largestFree = largest;
+    *usedBytes = used;
+}
+
+#endif
+
 /* ---- the crash record ---------------------------------------------------- */
 
 /*

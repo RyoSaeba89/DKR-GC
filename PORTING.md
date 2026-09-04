@@ -2407,6 +2407,76 @@ plus `cpu box` already report it.
 **These four are now the whole open list.** Items 1 and 2 are independent; 3, 4
 and the "1" card are very likely one defect.
 
+### Every compressed asset in the ROM, verified offline (2026-09-04)
+
+"One asset does not decompress" had been in this document for two sessions with
+a sample size of one. It is now answered for the whole ROM, and the answer is
+that **the port's decompression is correct for every compressed asset the game
+owns**.
+
+There are six call sites into `gzip_inflate` in the whole tree, and one of them
+(`asset_table_load_zipped`) is `UNUSED`. The other five, with the container each
+one presents:
+
+| Call site | Section | Container |
+|---|---|---|
+| `objects.c:997` | `LEVEL_OBJECT_MAPS` | the stream starts at the table offset |
+| `tracks.c:2860` | `LEVEL_MODELS` | the same |
+| `object_models.c:144` | `OBJECT_MODELS` | the same |
+| `object_models.c:940` | `OBJECT_ANIMATIONS` | the same |
+| `textures_sprites.c:521` | `TEXTURES_2D`, `TEXTURES_3D` | a 0x20-byte `TextureHeader` first, `isCompressed` at 0x1D, then the stream |
+
+Every entry of every one of those tables was decompressed offline against the
+ROM, using exactly what `platform/gc/gc_gzip.c` does — a 4-byte little-endian
+uncompressed size, a 5-byte header, a raw DEFLATE stream — and checked against
+the size the container itself declares:
+
+```
+LEVEL_OBJECT_MAPS      136 entries,  136 ok, 0 bad
+LEVEL_MODELS            55 entries,   55 ok, 0 bad
+OBJECT_MODELS          390 entries,  390 ok, 0 bad
+OBJECT_ANIMATIONS      470 entries,  470 ok, 0 bad
+TEXTURES_2D            906 entries,  906 ok, 0 bad
+TEXTURES_3D           1401 entries, 1393 ok, 0 bad, 8 stored uncompressed
+```
+
+**3350 compressed assets, 3350 decompress at their stated length.** So a runtime
+failure cannot be the container, the header offset, the endianness or the
+window size. It can only be a buffer or a pointer — which is what the read ring
+and the ARAM re-read are there to catch.
+
+*(`SPRITES` is not in the list because it is not compressed and not textures:
+193 entries in 3776 bytes, about 19 bytes each, which is a descriptor table.)*
+
+**And the log now makes a positive statement instead of a silence.** It only
+ever spoke when inflate failed, so "no `gzip:` line this run" was
+indistinguishable from "that code path never ran". The heartbeat carries
+`gzip N ok, M failed`.
+
+### The pool was completely unobservable (2026-09-04)
+
+Found while auditing the asset path, and it is a hole rather than a bug.
+
+`mempool_slot_find` reports its own failures — "No more slots available", "No
+suitable block found for allocation" — through `stubbed_printf`, which
+`include/types.h` defines as **nothing**. And the two callers that matter most
+do not go through `mempool_alloc_safe` with its `dump_memory_to_cpak` hook:
+`object_model_init` and `texture_load` both call plain `mempool_alloc` and
+return NULL, silently. A model or a texture then simply is not there.
+
+That is precisely the shape of "the menu text and the 2D sprites are missing and
+nothing in the log says why", and there was no way to rule it in or out. The
+heartbeat now carries:
+
+```
+pool: N/1600 slots, used X KB, free Y KB, largest free Z KB | gzip A ok, B failed
+```
+
+Slots are a **cliff, not a slope**: the moment `curNumSlots + 1` reaches 1600
+the allocator refuses everything, so a count creeping towards 1600 is a
+prediction and not just a statistic. And `largest free` separates "out of
+space" from "fragmented", which a total would hide.
+
 ### The crackle: the two clocks were 0.23 % apart (2026-09-04)
 
 The tenth session's instrument named it in one run, and the shape of the number
@@ -2566,10 +2636,14 @@ three-tap mode. `GC_TEXFILT` is the A/B — `0` forces point sampling, `1` force
 linear, `2` (the default) follows the game — and which one is right is a
 judgement about how the game should look, not a measurement.
 
-**3. The asset that does not decompress.** ARAM is verified identical, and the
-failure did not recur on the build that fixed `osInvalDCache`. Watch for it; the
-read ring and the ARAM re-read are in place if it comes back. If it is genuinely
-gone, item 2's third hypothesis loses its most plausible mechanism.
+**3. The asset that does not decompress — as far as this can be taken without a
+recurrence.** Three independent results now: the ARAM image reads back
+byte-identical to what was uploaded; **all 3350 compressed assets in the ROM
+decompress offline** against the port's exact container (see the section above);
+and the failure has not recurred on either build since `osInvalDCache` stopped
+discarding a neighbour's cache lines. It is not declared fixed — one absence is
+one absence — but it is no longer a format question, and `gzip N ok, M failed`
+now says so positively every beat instead of by silence.
 
 **4. The flat, pale ground, and the flickering shadows.** Visible on the
 captures, present with **and** without `GC_DYNLIT2`. The texture counters are

@@ -277,6 +277,26 @@ static void gc_heartbeat(u32 ticks) {
            (int) gGcTrFirstBox[3]);
     /* Sixteen consecutive frames of emitted triangles. An alternation here says
      * the strobe is upstream of the renderer; a flat row says it is inside it. */
+    /*
+     * The game's heap and its decompressions, both of which were silent.
+     *
+     * mempool reports "No more slots available" through stubbed_printf, which
+     * is defined as nothing; object_model_init and texture_load use plain
+     * mempool_alloc and hand back NULL without a word. So an exhausted pool
+     * looks exactly like "the menu text is missing" and says nothing at all.
+     * `slots` is a cliff rather than a slope -- at 1600 the allocator refuses
+     * everything -- and `largest` separates out of space from fragmented.
+     */
+    {
+        u32 slotsUsed, slotsMax, freeBytes, largestFree, usedBytes;
+
+        gc_pool_report(&slotsUsed, &slotsMax, &freeBytes, &largestFree, &usedBytes);
+        gc_log("           pool: %u/%u slots, used %u KB, free %u KB, largest free %u KB"
+               " | gzip %u ok, %u failed\n",
+               (unsigned) slotsUsed, (unsigned) slotsMax, (unsigned) (usedBytes >> 10),
+               (unsigned) (freeBytes >> 10), (unsigned) (largestFree >> 10),
+               (unsigned) gGcGzipOk, (unsigned) gGcGzipFail);
+    }
     gc_log("           tris out, last 16 frames:");
     for (op = 0; op < 16; op++) {
         gc_log(" %u", (unsigned) gGcTrisOutHist[(gGcTrisHistPos + op) % 16]);
