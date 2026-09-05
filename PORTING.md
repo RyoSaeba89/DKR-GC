@@ -36,6 +36,8 @@ The knobs, all documented in the Makefile:
 | `GC_SDLOG` | `1` | Writes `sd:/dkr/dkr.log`. This is *the* diagnostic channel on real hardware. With no card mounted, every call is a compare and a return. |
 | `GC_AUDIO_FX` | `1` | Let the game turn its reverb on. `0` refuses it: the one-build A/B for "is the reverb responsible for what I am hearing". |
 | `GC_DYNLIT2` | `1` | `0` turns `calc_dynamic_lighting_for_object_2` back into a stub. Isolation, not an option. |
+| `GC_TEXEL1` | `1` | Binds tile 1 as a second GX texture so the combiner's `TEXEL1` reads it (water, blinking lights). `0` reads `TEXEL1` as a copy of `TEXEL0`, the old approximation. |
+| `GC_DEFLICKER` | `1` | The EFB copy's vertical deflicker filter. `0` disables it: the A/B for "every texture is too smooth". |
 
 The objects also depend on `build/gc/.cflags`, which remembers the flags:
 changing `GC_DEBUG` or `GC_MAIN_POOL_MB` rebuilds the tree instead of linking
@@ -2727,6 +2729,244 @@ What it does *not* settle is the missing text, because both logs of the day were
 recorded in-race, where the game submits only **two** texrects a frame — the two
 16x16 HUD icons. The funnel has never yet seen a menu frame. That is the one
 piece of data still missing.
+
+### A full read of the port against the original (2026-09-05)
+
+Not a hardware session: the whole of `platform/gc/` was re-read against
+`libultra/src/sc/sched.c`, `include/f3ddkr.h`, the game's own call sites and
+GLideN64's F3DDKR implementation, and the log of the resampler build's run
+(`3a7447a4`, 30 heartbeats) was read before anything was changed. Five
+divergences from the original came out of it. Each is a fix, not an
+instrument, and each is written up with the line it contradicts.
+
+**1. The frame cap was missing.** `gfxtask_run_xbus` sets `OS_SC_LAST_TASK`
+on every frame (`rcp_dkr.c:175`). In `sched.c:522` a task with that flag is
+*not* answered when it completes if fewer than two retraces have passed since
+the previous answer; it is parked in `sc->unkTask` and answered from
+`__scHandleRetrace`, which also increments `frameCount` on every retrace. That
+is the game's 30 fps ceiling (25 on PAL), and the comment at `sched.c:371`
+says so. The port answered the moment the list was walked, so the loop ran at
+whatever rate it could: `dkr-gc: 1800 retr | task gfx 1372` in the log is 38
+frames a second on a 50 Hz console — neither 25 nor 50 — with `fb_update`'s
+adaptive logic rate flipping between `LOGIC_60FPS` and `LOGIC_30FPS` from one
+frame to the next. Nothing in the game was written for that cadence, and the
+per-frame strobe of the animated characters is exactly the shape of a defect
+that depends on it. `os_sched.c` now transcribes the deferral and the
+retrace-side release; `frameCount` no longer advances per task.
+
+**2. Billboard corners took the anchor's `w` instead of adding it.**
+`gfx_vertex` did `w = anchor.w`; the microcode adds the whole clip vector, and
+GLideN64's `gSPBillboardVertex` — the F3DDKR implementation every emulator
+renders this game with — does `vtx.w += vtx0.w`. The corner's own `w` is
+`m[3][3]` of the billboard matrix, 1.0 in everything `mtxf_billboard` builds
+(the log shows it: `pre -47 218 0 1`). At a distance the difference is
+nothing (`285` against `286`); for the HUD, whose anchor goes through an
+orthographic matrix with `w = 1`, it is a factor of two in size and a
+displacement towards the centre on every element. That is "the banana count
+and the HUD are wrong".
+
+**3. Rectangles were drawn on the far plane.** The flat path's ortho put
+`z = 0` at GX's far plane, so a texture rectangle drawn with `Z_CMP` on lost
+to anything already in the depth buffer. The RDP gives a rectangle no depth of
+its own: with `G_ZS_PIXEL` it tests and writes zero, the nearest value there
+is, so a rectangle with `Z_CMP` always passes. The ortho row is now
+`clip.z = -z_in - 1` (near plane at `z_in = 0`) and `project_corner` writes the
+CPU-fallback depth against that same row. The glyphs measured today carry
+`zcmp0`, so this is fidelity rather than the cause of the missing text.
+
+**4. `TEXEL1` was a copy of `TEXEL0`.** `material_init` loads a second image
+into TMEM 0x100 as tile 1 whenever a texture carries one
+(`gDPLoadMultiBlock_4bS`, `textures_sprites.c:1516`), and the draw tables read
+it: water (`G_CC_BLENDTEX_MODULATEA_1_PRIM`), blinking lights
+(`G_CC_BLENDTEX_PRIM`). The renderer now resolves tile 1 through the same
+TMEM bookkeeping, binds it to `GX_TEXMAP1`, samples it in a leading TEV stage
+into `TEVREG2`, and every later stage reads `TEXEL1` from that register. A
+two-cycle combiner used to park its first cycle in `TEVREG2`; while a second
+texture is bound the first cycle stays in `TEVPREV`, which every second cycle
+DKR emits (all single-stage) reads correctly. `GC_TEXEL1=0` restores the copy.
+
+**5. The ARAM read lock was held for whole level loads.** `gc_assets_read`'s
+bounce path took `sReadLock` around the *entire* multi-window loop, so a
+two-megabyte model read held the buffer the audio thread needs for a few
+hundred bytes of ADPCM for the whole transfer plus its memcpy. The log measured
+that as `gap 17..19 cb` at every level load — ninety to a hundred milliseconds
+of silence against a 64 ms ring. The lock is per window now, bounding the
+audio thread's wait at one 64 KB transfer.
+
+And two smaller ones: the `G_AC_THRESHOLD` alpha test is `>=` (the RDP
+discards *below* the reference), and `GC_DEFLICKER=0` turns off the EFB copy's
+vertical filter, the cheaper of the two candidate causes of "every texture is
+too smooth".
+
+**What the `3a7447a4` log settles, read before shipping.** The drift fix
+holds: `ai drops 0 events` on every beat, `rate step 30029` against a nominal
+30105, `ringMin` 1475–2762. The reverb runs. `gzip 1604 ok, 0 failed`; the
+pool peaks at 650/1600 slots. The remaining `gap 8..9 cb` is the audio task's
+own cadence (one push per two retraces, 40 ms, against 5.3 ms callbacks), not
+a defect. `ai steps 846..1519 over 11000` on the in-race beats is still a
+click count worth listening for — it drops to 0..20 in the menus. And the
+text rectangles were finally captured: `tr0 (94,230)-(97,241) tex 8027bde0
+192x11 fmtsiz 0d u 234..255 v 0..1090 | omL 00504240 zcmp0 zupd0 ac0` — IA8
+font strips, glyph-sized boxes, sane coordinates, no depth test, no alpha
+test, XLU blend. So whatever makes them invisible is in the texels or in the
+alpha they carry, not in where or how they are drawn.
+
+**Verified correct by reading, so it is not re-searched:** `obj_animate.c`
+against `obj_animate.s`, instruction by instruction, including the logical
+shifts and the buffer flip; the `G_SETCOMBINE` field decode against
+`gDPSetCombineLERP`; the mux tables; the IA8/IA4/I4/I8/CI texel readers; the
+texrect coordinate math against `gSPTextureRectangle`; `fb_update` against
+`src/video.c`; `osInvalDCache`'s partial-line handling; the fast and bounce
+ARAM paths' cache maintenance.
+
+**Shipped first:** `dkr.dol` md5 `6aaf3a55…`, `GC_DEBUG=1 GC_EMBED_ASSETS=0`.
+The heartbeat gained one line, `tris degenerate, same frames`, which says
+whether an emitted-but-invisible model is a vertex buffer that is empty every
+other frame. Superseded the same morning by the build below.
+
+#### The user's answers, and what they moved (2026-09-05, later)
+
+From the `3a7447a4` run: the music still crackles on some notes and then goes
+**almost silent with loud whistling underneath** after a while; menu text is
+absent in every menu; HUD sprites are absent in a race, or show horizontal
+lines; the large blurred blob in the sky photograph is a balloon.
+
+**The flat path draws nothing on the console.** The two GC_TEXTEST photographs
+settle it without a log line: a mire replaces *every* texture, and the race
+photograph shows no mire anywhere the HUD should be, the menu photograph none
+where the labels should be, while the panels behind them (3D quads, `tris
+20`) carry theirs. So it is not the glyph texels and not the state on the
+rectangles -- `tr0..tr5` in the log say those are right -- it is the
+rectangle path itself producing no pixels, on the console only. The one
+structural difference from the 3D path that works is the vertex format:
+`GX_POS_XY` against an ortho whose implied `z = 0` sat exactly on the far clip
+boundary. Both are gone: every flat primitive now submits `GX_POS_XYZ` with an
+explicit depth (`FLAT_Z`) just inside the near plane (`FLAT_NEAR`). And
+because that is a hypothesis, `GC_2DTEST=1` draws a magenta fill square and a
+mire square in the top-left corner through that exact path after every frame:
+no square = the path is dead at the GX level; fill only = its textured stage;
+both = the game's own state.
+
+**The 2D texel path is verified offline, for every format the game uses.** A
+script (`tex2d.py` in the session scratchpad) walks the asset LUT as
+`asset_loading.c` does, inflates all 906 `TEXTURES_2D` entries, and renders
+chosen ones with the port's exact reader. The small font (IA8 192x11, flags 0)
+and the fun font (RGBA32 72x12, flags 0) come out clean and readable. 729 of
+the 906 carry `RENDER_LINE_SWAP` (`1 << 10`, not the `0x04` the header comment
+says): a 16-bit one (texture 507, 68x30) is hatched read plainly and clean
+with the odd-row XOR-4 exchange -- the ROM stores it pre-exchanged, which is
+what `gDPLoadTextureBlockS` with `dxt = 0` requires and what the port undoes
+for 16- and 8-bit; a 32-bit one (the golden balloon icon, 298, 28x32) is
+clean read plainly, which is what the port does for 32-bit. Both branches of
+`swapOdd` are therefore right. And the blob in the sky *is* that golden
+balloon icon -- yellow crown, wavy blue band, orange foot -- a HUD 2D texture
+drawn in the world at some six times its size. `hud_element_render` goes
+through `render_sprite_billboard` with `gOrthoMatrixF = diag(1, 1, 0, 160)`
+and a viewport of `vscale 160, 160`: the HUD's anchor has `w = 160`, so the
+`+1` of the billboard corner is negligible there and the size fault is
+elsewhere in that chain. Not found by reading; the 2D-test run comes first.
+
+**The audio "goes almost silent with whistling":** an accumulator, and the
+only feedback loop in the port is the reverb's delay line through `A_POLEF`.
+`GC_AUDIO_FX=0` is the one-build A/B, so the card carries it as a second
+executable rather than costing a swap.
+
+**Shipped:** `dkr.dol` md5 `23965730…` (`GC_2DTEST=1`, plus everything above)
+and `dkr-nofx.dol` md5 `4ec887a2…` (the same with `GC_AUDIO_FX=0`), both
+`GC_DEBUG=1 GC_EMBED_ASSETS=0`, both selectable from Swiss; ELFs frozen as
+`dkr-23965730.elf` and `dkr-4ec887a2.elf`. Ten seconds in the title menu,
+then a race, then `dkr-nofx.dol` for the ear.
+
+### The flat path was the text, and the light direction was reading the stack (2026-09-05, afternoon)
+
+The `23965730` run (`GC_2DTEST=1`) answered in one boot: **HUD, menu text
+and the title screen are all back**, and both test squares are on screen.
+So the invisible rectangles were the flat path itself -- `GX_POS_XY` against
+an ortho with the implied `z = 0` on the far clip boundary -- and nothing in
+the texels or the state. The log confirms the frame cap too: `task gfx 6063`
+in `12120 retr`, exactly two retraces a frame.
+
+**What the run reported next, and what settled it.** The racers' shading
+flickers (the video shows Diddy's head and shirt going dark and bright from
+frame to frame while the kart stays put); a 2D sprite draws with horizontal
+lines; the music still crackles. Three readings:
+
+1. **`mtxf_transform_dir` reads the next matrix in memory.** The function is
+   under `#ifdef NON_EQUIVALENT` in `src/hasm/math_util.c` -- the
+   decompilation's own mark for "this C is known not to behave like the
+   original" -- and this port defines `NON_EQUIVALENT` because `GLOBAL_ASM`
+   expands to nothing here. Its y terms were written `*mf[1][0]`, which is
+   `(*(mf + 1))[0][0]`: the first element of the matrix *after* this one, not
+   `(*mf)[1][0]`. Both dynamic-lighting functions call it -- once with the view
+   matrix, and `_2` (the racers' branch, `dynlit2: obj 30..62` per beat) once
+   more with a matrix on its own stack, so the light direction picked up
+   whatever the stack held past that matrix, different at every call. That is
+   the flicker. Fixed to the column-wise product the IDO listing performs
+   (loads at 0x0/0x10/0x20 and so on). The other three `NON_EQUIVALENT`
+   bodies in the tree are all `UNUSED`.
+2. **The scheduler and the audio manager had the same LWP priority.** The
+   port halved libultra priorities; 13 (scheduler) and 12 (audio manager) both
+   became 6, so a retrace and the frame reply riding on it could wait behind
+   an `alAudioFrame` in progress. Priorities are passed through unhalved now,
+   clamped to LWP's range; only the fault thread's 255 hits the clamp.
+3. **The crackle is in the mix, not the delivery, and the stage is now
+   named per beat.** `ai drops 0` all run long while `ai steps` counts 350 to
+   1500 discontinuities a second in a race and none in the menus. Every voice
+   crosses three stateful stages -- ADPCM decode, resample, envelope -- so each
+   now remembers its last sample per voice (the state pointer) and counts the
+   joins that jump by a third of full scale, and the jumps inside a chunk:
+   `aud steps: adpcm join N in N | resample join N in N | env join N in N`.
+   The stage that jumps is the stage to read.
+
+**Shipped:** `dkr.dol` md5 `53a2ecd3…` (everything above, `GC_2DTEST=0`) and
+`dkr-nofx.dol` md5 `f9fc2257…` (`GC_AUDIO_FX=0`), both `GC_DEBUG=1
+GC_EMBED_ASSETS=0`; ELFs frozen by md5. The 2D sprite with horizontal lines
+has not been identified yet -- the photograph shows a small orange/blue sprite
+below the test squares; the offline check says every 2D format converts
+correctly from the ROM, so it is a runtime buffer or a batch flag, and the
+next log's `tr` lines on that screen would name it.
+
+### The 32-bit line swap, and where the crackle is not (2026-09-05, evening)
+
+The `53a2ecd3` run: **the racers no longer flicker** -- `mtxf_transform_dir`
+was the whole of it. Two things remained: the weapon-display balloon drawn
+serrated on every odd row, and the crackle.
+
+**The balloon: 32-bit line-swapped textures exchange texel pairs.** Not a
+reading of the manual, a measurement. `tex2d.py` scores every
+`RENDER_LINE_SWAP` 2D texture by vertical roughness under three candidate
+odd-row exchanges -- none, four bytes, eight bytes: of the 160 RGBA32 ones,
+159 are smoothest with **eight** bytes exchanged (adjacent texel pairs), one
+with none, none with four; the RGBA16 ones prefer four, every one, which the
+contact sheets confirm by eye (hatched plain, clean exchanged). The port had
+excluded 32-bit textures from the exchange altogether, and the weapon balloon
+is `render_ortho_triangle_image` drawing a 32-bit `04d0` sprite. `read_texel`
+now XORs 8 for `siz == 3` and `tile_image` no longer skips it. The HUD digits
+looked right all along because they carry flags 0.
+
+**The crackle is not the mixer's arithmetic.** The per-stage counter said
+`adpcm in 7000..23000` a beat with `resample`/`env` a third of that, which
+read as a broken decoder -- until the port's `a_adpcm_dec`, `a_resample` and
+`a_env_mixer` were diffed against `ref-sm64gc/src/pc/mixer.c` scalar paths
+line by line (identical), the ADPCM book count was traced to `bookSize =
+2 * order * npredictors * 8` bytes (the port's `memcpy` is right), and the
+built binary was disassembled for the nibble sign-extension (`srawi ..,28`
+present, so GCC 16 had not folded the signed-overflow idiom). Those steps are
+noise-like sound effects decoding correctly. Two hardenings anyway: the
+nibble sign is now explicit C, and the whole tree builds with `-fwrapv`,
+because the decompilation assumes wrapping arithmetic throughout.
+
+**What is left for the crackle, and the instrument for it.** The DAC-side
+counter only sees steps over a third of full scale; a replayed DMA block --
+the AI restarting the block it has when the callback that latches the next one
+is late -- clicks at any amplitude, in menus as well as races, and shows on no
+depth counter because the ring stays full. The block is 512 frames now (10.7
+ms, twice the margin) and `ai cb late N, longest N us` counts callbacks that
+arrive later than a block plus 1.5 ms. The reverb A/B (`dkr-nofx.dol`) has
+still not been listened to; it is the other half.
+
+**Shipped:** `dkr.dol` md5 `abe7073c…`, `dkr-nofx.dol` md5 `882f37ec…`,
+both `GC_DEBUG=1 GC_EMBED_ASSETS=0`; ELFs frozen by md5.
 
 ### Where this stands, end of 2026-09-04 — read this first
 

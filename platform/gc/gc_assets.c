@@ -516,13 +516,20 @@ void gc_assets_read(u32 romOffset, void *dst, u32 len) {
     }
 #endif
 
-    /* Slow path: widen to the enclosing aligned window and copy out the part
+    /*
+     * Slow path: widen to the enclosing aligned window and copy out the part
      * that was asked for, in pieces the bounce buffer can hold. The DMA and the
-     * copy that reads it back are one step -- see the note on sReadLock. */
-    if (sReadLock != LWP_MUTEX_NULL) {
-        LWP_MutexLock(sReadLock);
-    }
-
+     * copy that reads it back are one step -- see the note on sReadLock.
+     *
+     * The lock is taken per window, not around the whole loop. A level load
+     * reads a model of a megabyte or two through here, and holding the lock
+     * for the whole of it kept the audio thread -- which needs the same buffer
+     * for a few hundred bytes of ADPCM per voice -- waiting for the entire
+     * transfer plus its memcpy. The log measured that as `gap 17..19 cb`: the
+     * producer silent for ninety to a hundred milliseconds against a 64 ms
+     * ring, three times a run, every time at a level load. Releasing between
+     * windows bounds the wait at one 64 KB window, about two milliseconds.
+     */
     while (len > 0) {
         u32 alignedStart = ALIGN_DOWN(romOffset);
         u32 skew = romOffset - alignedStart;
@@ -530,16 +537,18 @@ void gc_assets_read(u32 romOffset, void *dst, u32 len) {
         u32 take = (len < window) ? len : window;
         u32 span = ALIGN_UP(skew + take);
 
+        if (sReadLock != LWP_MUTEX_NULL) {
+            LWP_MutexLock(sReadLock);
+        }
         DCInvalidateRange(sBounce, span);
         aram_dma(ARQ_ARAMTOMRAM, sAramBase + alignedStart, sBounce, span);
         memcpy((u8 *) dst, sBounce + skew, take);
+        if (sReadLock != LWP_MUTEX_NULL) {
+            LWP_MutexUnlock(sReadLock);
+        }
 
         romOffset += take;
         dst = (u8 *) dst + take;
         len -= take;
-    }
-
-    if (sReadLock != LWP_MUTEX_NULL) {
-        LWP_MutexUnlock(sReadLock);
     }
 }

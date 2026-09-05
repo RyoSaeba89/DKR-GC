@@ -108,6 +108,23 @@ GC_TEXTEST ?= 0
 # ref-sm64gc's GFX_GX_DEBUG_PROJ_TINT.
 GC_PROJ_TINT ?= 0
 
+# GC_2DTEST: draw a magenta fill square and a mire square in the top-left
+# corner through the flat (rectangle) path after every frame. A diagnostic for
+# "the game's text and HUD rectangles draw no pixels on the console": no
+# square = the path is dead at the GX level, fill only = its textured stage,
+# both = the game's own state. Never ship this at 1.
+GC_2DTEST ?= 0
+
+# GC_TEXEL1: bind tile 1 as a second GX texture so the combiner's TEXEL1 reads
+# the image the game loaded there (water, blinking lights, the two-texture
+# fonts), instead of a copy of TEXEL0. 0 puts the old approximation back.
+GC_TEXEL1 ?= 1
+
+# GC_DEFLICKER: the EFB copy's vertical deflicker filter, which libogc turns on
+# for every interlaced mode and which blurs the whole picture vertically by
+# design. 0 disables it: the one-build A/B for "every texture is too smooth".
+GC_DEFLICKER ?= 1
+
 # ---- devkitPro / libogc2 ----------------------------------------------------
 # libogc2 lives beside libogc in the devkitPro tree and keeps its GameCube
 # tree under libogc2/gamecube (rather than libogc/lib/cube), so the paths below
@@ -219,7 +236,7 @@ DEFINES := \
 	-D_LANGUAGE_C -D_FINALROM -DNDEBUG -DMODERN_CC \
 	-DF3DDKR_GBI \
 	-DGC_MAIN_POOL_MB=$(GC_MAIN_POOL_MB) \
-	$(if $(filter 1,$(GC_DEBUG)),-DGC_DEBUG,) 	-DGC_NO_CULL=$(GC_NO_CULL) 	-DGC_BILLBOARD=$(GC_BILLBOARD) 	-DGC_RENDERMODE=$(GC_RENDERMODE) 	-DGC_COMBINER=$(GC_COMBINER) 	-DGC_TEXTEST=$(GC_TEXTEST) 	-DGC_PROJ_TINT=$(GC_PROJ_TINT) -DGC_DYNLIT2=$(GC_DYNLIT2) -DGC_AUDIO_FX=$(GC_AUDIO_FX) -DGC_SDLOG=$(GC_SDLOG) -DGC_MEMCARD=$(GC_MEMCARD) -DGC_FORCE_PAL=$(GC_FORCE_PAL) -DGC_CRASHTEST=$(GC_CRASHTEST) \
+	$(if $(filter 1,$(GC_DEBUG)),-DGC_DEBUG,) 	-DGC_NO_CULL=$(GC_NO_CULL) 	-DGC_BILLBOARD=$(GC_BILLBOARD) 	-DGC_RENDERMODE=$(GC_RENDERMODE) 	-DGC_COMBINER=$(GC_COMBINER) 	-DGC_TEXTEST=$(GC_TEXTEST) 	-DGC_PROJ_TINT=$(GC_PROJ_TINT) -DGC_TEXEL1=$(GC_TEXEL1) -DGC_DEFLICKER=$(GC_DEFLICKER) -DGC_2DTEST=$(GC_2DTEST) -DGC_DYNLIT2=$(GC_DYNLIT2) -DGC_AUDIO_FX=$(GC_AUDIO_FX) -DGC_SDLOG=$(GC_SDLOG) -DGC_MEMCARD=$(GC_MEMCARD) -DGC_FORCE_PAL=$(GC_FORCE_PAL) -DGC_CRASHTEST=$(GC_CRASHTEST) \
 	-DVERSION_us_v77 \
 	-DBUILD_VERSION=VERSION_G -DBUILD_VERSION_STRING=\"2.0G\"
 
@@ -238,9 +255,14 @@ DEFINES := \
 # than editing src/. Both machines are 32-bit, so the conversions are lossless.
 N64ISMS := -Wno-int-conversion -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast
 
+# -fwrapv: the decompilation and the transcribed mixer both lean on signed
+# arithmetic wrapping the way the MIPS hardware did -- `(n << 28) >> 28` to
+# sign-extend a nibble, products that run into the sign bit and are then
+# shifted logically. Without it every one of those is undefined behaviour that
+# a recent GCC may fold away.
 CFLAGS := $(MACHDEP) $(INCLUDES) $(DEFINES) \
 	-O2 -ffunction-sections -fdata-sections \
-	-fno-strict-aliasing -fsigned-char \
+	-fno-strict-aliasing -fsigned-char -fwrapv \
 	-Wall -Wno-unused-variable -Wno-unused-but-set-variable \
 	-Wno-unused-function -Wno-missing-braces -Wno-sign-compare \
 	$(N64ISMS) \

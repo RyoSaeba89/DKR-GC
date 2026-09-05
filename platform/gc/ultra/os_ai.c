@@ -27,6 +27,7 @@
 #include <ogc/audio.h>
 #include <ogc/cache.h>
 #include <ogc/machine/processor.h>
+#include <ogc/lwp_watchdog.h>
 
 #include <math.h>
 #include <string.h>
@@ -38,7 +39,17 @@
 /* One DMA block. The AI wants a multiple of 32 bytes; at 48 kHz stereo 16-bit
  * this is a little over 5 ms, short enough to keep latency invisible and long
  * enough that the callback overhead is irrelevant. */
-#define DMA_FRAMES 256
+/*
+ * 512 rather than 256. The AI raises its interrupt when a block finishes and
+ * immediately starts whatever block was latched next; if the callback that
+ * latches it has not run by then -- interrupts held off by a card transfer,
+ * a long critical section, anything -- the hardware replays the block it has.
+ * That is a click at any volume, and one that no ring-depth counter can see,
+ * because the ring is full the whole time. Ten milliseconds of block is twice
+ * the margin for the same latency; the ring already holds sixty. `ai cb late`
+ * in the heartbeat says whether it ever happens.
+ */
+#define DMA_FRAMES 512
 #define DMA_BYTES (DMA_FRAMES * 4)
 
 /*
@@ -264,6 +275,8 @@ u32 gGcAiUnderruns;
  * left it unfed. See the note in dma_callback. */
 u32 gGcAiUnderEvents;
 u32 gGcAiUnderMax;
+u32 gGcAiCbLate;
+u32 gGcAiCbMaxUs;
 u32 gGcAiRingMin = 0xFFFFFFFFu;
 u32 gGcAiPushGapMax;
 /* The rate loop's two state variables, so the heartbeat can show it working:
@@ -300,6 +313,25 @@ static void dma_callback(void) {
 
 #ifdef GC_DEBUG
     gGcAiCallbacks++;
+    {
+        /* How long since the previous callback. One block is DMA_FRAMES /
+         * 48000 s; anything much past that means the previous block was
+         * replayed before this one could be latched. */
+        static u64 sPrevCb;
+        u64 now = gettime();
+
+        if (sPrevCb != 0) {
+            u32 us = (u32) ticks_to_microsecs(diff_ticks(sPrevCb, now));
+
+            if (us > gGcAiCbMaxUs) {
+                gGcAiCbMaxUs = us;
+            }
+            if (us > (DMA_FRAMES * 1000000u / OUTPUT_RATE_HZ) + 1500u) {
+                gGcAiCbLate++;
+            }
+        }
+        sPrevCb = now;
+    }
 
     /*
      * How close to empty the ring actually runs, and whether the silence comes

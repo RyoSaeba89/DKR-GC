@@ -149,9 +149,25 @@ GLOBAL_ASM("asm/math_util/mtxf_transform_point.s")
  * Official name: mathMtxFastXFMF
  */
 void mtxf_transform_dir(MtxF *mf, Vec3f *in, Vec3f *out) {
-    out->f[0] = (in->f[0] * (*mf)[0][0]) + (in->f[1] * *mf[1][0]) + (in->f[2] * (*mf)[2][0]);
-    out->f[1] = (in->f[0] * (*mf)[0][1]) + (in->f[1] * *mf[1][1]) + (in->f[2] * (*mf)[2][1]);
-    out->f[2] = (in->f[0] * (*mf)[0][2]) + (in->f[1] * *mf[1][2]) + (in->f[2] * (*mf)[2][2]);
+    /*
+     * GameCube port: this body was `*mf[1][0]`, `*mf[1][1]`, `*mf[1][2]` for
+     * the y terms, which is `(*(mf + 1))[0][0]` -- the first element of the
+     * matrix *after* this one in memory, not element [1][0] of this one. That
+     * is why the decompilation marks the function NON_EQUIVALENT; the N64
+     * build assembles the original instead. This port compiles the C, and both
+     * dynamic-lighting functions call it with a stack matrix, so the light
+     * direction picked up whatever lay beyond that matrix on the stack and
+     * changed from frame to frame: the racers' shading flickered. The
+     * column-wise product below is what src/hasm/ido/math_util.s does
+     * (loads at 0x0/0x10/0x20, 0x4/0x14/0x24, 0x8/0x18/0x28).
+     */
+    f32 x = in->f[0];
+    f32 y = in->f[1];
+    f32 z = in->f[2];
+
+    out->f[0] = (x * (*mf)[0][0]) + (y * (*mf)[1][0]) + (z * (*mf)[2][0]);
+    out->f[1] = (x * (*mf)[0][1]) + (y * (*mf)[1][1]) + (z * (*mf)[2][1]);
+    out->f[2] = (x * (*mf)[0][2]) + (y * (*mf)[1][2]) + (z * (*mf)[2][2]);
 }
 #else
 GLOBAL_ASM("asm/math_util/mtxf_transform_dir.s")

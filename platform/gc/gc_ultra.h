@@ -180,6 +180,7 @@ extern s32 gGcTrDbg[6][14];
 /* Emitted triangles for each of the last sixteen frames, oldest at
  * gGcTrisHistPos. A per-frame alternation is visible here and in no total. */
 extern u32 gGcTrisOutHist[16];
+extern u32 gGcTrisDegenHist[16];
 extern u32 gGcTrisHistPos;
 
 /* The game's heap, which is otherwise unobservable: mempool reports its own
@@ -254,6 +255,11 @@ extern u32 gGcAudioCmds, gGcAudioSaves, gGcAudioPeak;
  * ratio is the instrument; peak on its own cannot tell one clipped drum hit
  * from a mix that is railing, and for a day it did not. */
 extern u32 gGcAudioSamples, gGcAudioClipped;
+/* Discontinuities per mixer stage: at the join with the voice's previous
+ * chunk, and inside a chunk. The stage that jumps is the stage to read. */
+extern u32 gGcAudStepAdpcmJoin, gGcAudStepAdpcmIn;
+extern u32 gGcAudStepResampJoin, gGcAudStepResampIn;
+extern u32 gGcAudStepEnvJoin, gGcAudStepEnvIn;
 
 /* One level up from the mixer: libultra's own synthesiser, in
  * libultra/src/audio. `syn` counts alAudioFrame calls, how many turned back
@@ -277,6 +283,11 @@ extern u32 gGcAiCallbacks, gGcAiUnderruns, gGcAiPushed, gGcAiRingUsed;
  * one DMA block, how empty the ring is when the consumer looks (not when the
  * producer does), and the longest run of callbacks with no push at all. */
 extern u32 gGcAiUnderEvents, gGcAiUnderMax, gGcAiRingMin, gGcAiPushGapMax;
+/* DMA callbacks that arrived late -- later than one block plus a margin after
+ * the previous one -- and the longest interval seen. A late callback means the
+ * AI had no next block latched when the current one ended, and the hardware
+ * replays the block it has: a click that no ring-depth counter can see. */
+extern u32 gGcAiCbLate, gGcAiCbMaxUs;
 /* The audio producer's two times: longest interval between audio tasks, and
  * longest time inside one. Separates "the task was late" from "the task was
  * slow", which one gap counter cannot. */

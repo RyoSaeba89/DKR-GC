@@ -228,6 +228,20 @@ static void gc_heartbeat(u32 ticks) {
            (unsigned) gGcAiStepMax);
     gGcAiSteps = 0;
     gGcAiStepMax = 0;
+    /* Whether the DAC was ever left without a next block. */
+    gc_log("\n           ai cb late %u, longest %u us (block %u us)", (unsigned) gGcAiCbLate,
+           (unsigned) gGcAiCbMaxUs, (unsigned) (512u * 1000000u / 48000u));
+    gGcAiCbLate = 0;
+    gGcAiCbMaxUs = 0;
+    /* The same steps, one stage earlier each: where in the mixer they
+     * appear. `join` is between a voice's chunks, `in` inside one. */
+    gc_log("\n           aud steps: adpcm join %u in %u | resample join %u in %u | env join %u in %u",
+           (unsigned) gGcAudStepAdpcmJoin, (unsigned) gGcAudStepAdpcmIn,
+           (unsigned) gGcAudStepResampJoin, (unsigned) gGcAudStepResampIn,
+           (unsigned) gGcAudStepEnvJoin, (unsigned) gGcAudStepEnvIn);
+    gGcAudStepAdpcmJoin = gGcAudStepAdpcmIn = 0;
+    gGcAudStepResampJoin = gGcAudStepResampIn = 0;
+    gGcAudStepEnvJoin = gGcAudStepEnvIn = 0;
     gGcAiUnderEvents = 0;
     gGcAiUnderMax = 0;
     gGcAiRingMin = 0xFFFFFFFFu;
@@ -326,6 +340,13 @@ static void gc_heartbeat(u32 ticks) {
     gc_log("           tris out, last 16 frames:");
     for (op = 0; op < 16; op++) {
         gc_log(" %u", (unsigned) gGcTrisOutHist[(gGcTrisHistPos + op) % 16]);
+    }
+    /* Of those, the ones that covered no pixels. An alternation *here* while
+     * `tris out` stays flat is a vertex buffer that is empty every other
+     * frame, upstream of the renderer after all. */
+    gc_log("\n           tris degenerate, same frames:");
+    for (op = 0; op < 16; op++) {
+        gc_log(" %u", (unsigned) gGcTrisDegenHist[(gGcTrisHistPos + op) % 16]);
     }
     gc_log("\n");
     for (op = 0; op < gGcStateDbgCount; op++) {

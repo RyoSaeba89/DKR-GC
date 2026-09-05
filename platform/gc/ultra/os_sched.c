@@ -177,6 +177,23 @@ OSMesgQueue *osScGetInterruptQ(OSSched *sc) {
  */
 static s32 sSwapBufferMsg[2] = { OSMESG_SWAP_BUFFER, OSMESG_SWAP_BUFFER };
 
+/*
+ * Send a task's completion message, with the D_800DE730 substitution.
+ *
+ * Split out of run_task because the reply is not always sent when the task
+ * finishes: see the OS_SC_LAST_TASK note below.
+ */
+static void task_reply(OSScTask *task) {
+    if (task->msgQ == NULL) {
+        return;
+    }
+    if (task->unk68 || task->msg != NULL) {
+        osSendMesg(task->msgQ, task->msg, OS_MESG_NOBLOCK);
+    } else {
+        osSendMesg(task->msgQ, (OSMesg) sSwapBufferMsg, OS_MESG_NOBLOCK);
+    }
+}
+
 static void run_task(OSSched *sc, OSScTask *task) {
     switch (task->list.t.type) {
         case M_GFXTASK:
@@ -214,7 +231,6 @@ static void run_task(OSSched *sc, OSScTask *task) {
                 COUNT(gGcSwaps);
                 gc_video_swap(task->framebuffer);
             }
-            sc->frameCount++;
             break;
 
         case M_AUDTASK:
@@ -311,13 +327,43 @@ static void run_task(OSSched *sc, OSScTask *task) {
      * and a photograph of the television were what it took, and the answer was
      * in this repository the whole time.
      */
-    if (task->msgQ != NULL) {
-        if (task->unk68 || task->msg != NULL) {
-            osSendMesg(task->msgQ, task->msg, OS_MESG_NOBLOCK);
-        } else {
-            osSendMesg(task->msgQ, (OSMesg) sSwapBufferMsg, OS_MESG_NOBLOCK);
+    /*
+     * And the second half of the same function, which the port had left out:
+     * the reply to the frame's last graphics task is *deferred*.
+     *
+     * __scTaskComplete (libultra/src/sc/sched.c:522):
+     *
+     *     if (t->flags & OS_SC_LAST_TASK) {
+     *         if (sc->frameCount <= 1) { sc->unkTask = t; return 1; }
+     *         ...reply...; sc->frameCount = 0; return 1;
+     *     }
+     *
+     * and __scHandleRetrace (sched.c:369) does `sc->frameCount += 1` on every
+     * retrace, then replies to unkTask once frameCount reaches 2 and resets it.
+     * frameCount therefore counts retraces since the last reply, and a reply
+     * goes out no sooner than two retraces after the previous one. That is the
+     * game's frame cap -- 30 frames per second on NTSC, 25 on PAL -- and the
+     * comment at sched.c:371 says so outright: "If you want to make the game
+     * 60FPS, change this to 2".
+     *
+     * gfxtask_run_xbus sets OS_SC_LAST_TASK on every frame it submits
+     * (src/rcp_dkr.c:175). Replying the moment the list had been walked let
+     * the game loop run whenever it liked: measured on the console, 129 frames
+     * in 180 retraces -- neither 25 nor 50 -- with fb_update's adaptive logic
+     * rate flipping between LOGIC_60FPS and LOGIC_30FPS from one frame to the
+     * next. Nothing in the game was written for that cadence.
+     */
+    if ((task->flags & OS_SC_LAST_TASK) && task->list.t.type == M_GFXTASK) {
+        if (sc->frameCount <= 1) {
+            sc->unkTask = task;
+            return;
         }
+        task_reply(task);
+        sc->frameCount = 0;
+        return;
     }
+
+    task_reply(task);
 }
 
 /* Audio tasks arrive on cmdQ rather than interruptQ, so it is drained on every
@@ -356,6 +402,21 @@ static void handle_retrace(OSSched *sc) {
 
     COUNT(gGcSchedRetraces);
     sAudioRetraceParity ^= 1;
+
+    /*
+     * The retrace side of the frame cap: count the retrace, and release the
+     * reply that run_task held back once two have passed. Same order as
+     * __scHandleRetrace -- the deferred reply goes out *before* the clients
+     * get this retrace, so the game thread finds both waiting when it wakes.
+     */
+    sc->frameCount++;
+    if (sc->unkTask != NULL && sc->frameCount >= 2) {
+        OSScTask *t = sc->unkTask;
+
+        sc->unkTask = NULL;
+        task_reply(t);
+        sc->frameCount = 0;
+    }
 
     for (client = sc->clientList; client != NULL; client = client->next) {
         if (client->id == OS_SC_ID_PRENMI) {

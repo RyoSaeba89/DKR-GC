@@ -673,6 +673,24 @@ static BOOL drawing_to_color(void) {
 /* The corner colour for a rectangle whose colour comes from the combiner. */
 static const GXColor kWhite = { 0xFF, 0xFF, 0xFF, 0xFF };
 
+/*
+ * The depth every flat primitive is submitted at, and the near plane of the
+ * flat projection that places it.
+ *
+ * Flat primitives used to be GX_POS_XY vertices -- no z at all -- against an
+ * ortho whose z row put that implied zero exactly on the far clip boundary.
+ * Every rectangle the game draws that way (text, HUD, logo) is invisible on the
+ * console and was never seen invisible under the emulator, while the 3D path,
+ * which submits GX_POS_XYZ with a depth strictly inside the range, draws.
+ * The RDP puts a rectangle at depth zero, the nearest value there is, so the
+ * flat depth is now explicit and sits just inside the near plane: FLAT_NEAR
+ * below makes clip.z = -(1/(1-FLAT_NEAR)) * (z_in + 1) + ..., i.e. -0.998 at
+ * z_in = 0 (see gfx_ortho). Nothing here rests on a clip boundary any more,
+ * and nothing rests on a two-component position format.
+ */
+#define FLAT_Z 0.0f
+#define FLAT_NEAR (-0.002f)
+
 #ifdef GC_DEBUG
 /* Which N64 texture formats the frame actually asks for, as a bitmask indexed
  * by (fmt << 2) | siz -- fmt is RGBA/YUV/CI/IA/I, siz is 4/8/16/32 bits. Only
@@ -746,6 +764,17 @@ s32 gGcTrDbg[TR_DBG][14]; /* x0 y0 x1 y1 | texAddr w h fmtsiz | u0 u1 v0 v1 | om
 #define TRIS_HIST 16
 u32 gGcTrisOutHist[TRIS_HIST];
 u32 gGcTrisHistPos;
+/*
+ * And beside it, the emitted triangles whose three corners project to the
+ * same point. `tris out` is flat while the characters strobe, which was read
+ * as "the geometry is submitted every frame, so the fault is in the drawing".
+ * It is not that clean: a double-sided model whose vertex buffer alternates
+ * between a real pose and zeros is still *emitted* every frame -- BACKFACE_DRAW
+ * skips the area test that would have culled it -- it just covers no pixels.
+ * Counting the degenerate ones per frame tells those two apart.
+ */
+u32 gGcTrisDegenHist[TRIS_HIST];
+u32 gGcTrisDegen;
 u32 gGcTexW, gGcTexH;
 /* The raw words of the last G_SETTILE and G_SETTILESIZE, and of the last
  * G_TEXRECT with its two G_RDPHALF followers. Decoding these by hand is what
@@ -1101,7 +1130,20 @@ static void read_texel(const u8 *row, u32 fmt, u32 siz, u32 x, BOOL swap, const 
             break;
     }
     if (swap) {
-        off ^= 4;
+        /*
+         * The odd-row exchange, by size. For 4-, 8- and 16-bit texels the
+         * RDP exchanges the two 32-bit halves of each 64-bit word, which is
+         * four bytes. For 32-bit texels it exchanges texel *pairs*: eight
+         * bytes. That is not a reading of the hardware manual, it is a
+         * measurement on the ROM -- of the 160 RGBA32 2D textures the game
+         * marks RENDER_LINE_SWAP, 159 are smoothest read with adjacent pairs
+         * exchanged on odd rows, one with no exchange, none with the
+         * four-byte one (`tex2d.py`, vertical roughness over three
+         * candidates). The 16-bit ones prefer four bytes, every one of them.
+         * This port used to skip 32-bit textures entirely, which is what made
+         * the weapon-display balloon serrated on every odd row.
+         */
+        off ^= (siz == 3) ? 8 : 4;
     }
 
     switch ((fmt << 2) | siz) {
@@ -1623,7 +1665,9 @@ static BOOL tile_image(const TileDesc *t, TileImage *out) {
      * when the row is a whole number of 64-bit words, which is what line
      * guarantees and the packed fallback does not.
      */
-    out->swapOdd = ld->swapOdd && t->siz != 3 && t->line != 0;
+    /* 32-bit textures are no longer excluded: see read_texel for the
+     * eight-byte exchange they take, and the measurement behind it. */
+    out->swapOdd = ld->swapOdd && t->line != 0;
 
     /*
      * The palette, for a colour-index tile.
@@ -1821,7 +1865,7 @@ static void gfx_set_2d_state(void) {
     GX_ClearVtxDesc();
     GX_SetVtxDesc(GX_VA_POS, GX_DIRECT);
     GX_SetVtxDesc(GX_VA_CLR0, GX_DIRECT);
-    GX_SetVtxAttrFmt(GX_VTXFMT0, GX_VA_POS, GX_POS_XY, GX_F32, 0);
+    GX_SetVtxAttrFmt(GX_VTXFMT0, GX_VA_POS, GX_POS_XYZ, GX_F32, 0);
     GX_SetVtxAttrFmt(GX_VTXFMT0, GX_VA_CLR0, GX_CLR_RGBA, GX_RGBA8, 0);
 
     GX_SetNumChans(1);
@@ -1896,9 +1940,23 @@ static void load_2d_projection(void) {
         return;
     }
 
-    /* Game space straight through: x 0..320, y 0..240 downwards, and a depth
-     * range wide enough that the flat interface path is never clipped. */
-    gfx_ortho(proj, 0.0f, sGameHeight, 0.0f, sGameWidth, -1.0f, 0.0f);
+    /*
+     * Game space straight through: x 0..320, y 0..240 downwards.
+     *
+     * The depth row is chosen so that a flat vertex (z = FLAT_Z = 0) lands
+     * just inside the *near* plane: n = FLAT_NEAR, f = 1 gives
+     * clip.z = -(z_in + 1) / (1 - FLAT_NEAR), which is -0.998 for z_in = 0,
+     * and GX's clip range runs from -w at the near plane to 0 at the far one. That is what the RDP does
+     * with a rectangle: it has no z of its own, and with G_ZS_PIXEL the depth it
+     * tests and writes is zero -- the nearest value there is -- so a texture
+     * rectangle drawn with Z_CMP passes everywhere, exactly as a HUD or a menu
+     * label drawn over 3D scenery must. The previous choice (n = -1, f = 0)
+     * put the same vertex on the far plane, where any depth compare fails.
+     *
+     * The CPU-fallback geometry path shares this projection and supplies its
+     * own z through project_corner, which is written against the same row.
+     */
+    gfx_ortho(proj, 0.0f, sGameHeight, 0.0f, sGameWidth, FLAT_NEAR, 1.0f);
     GX_LoadProjectionMtx(proj, GX_ORTHOGRAPHIC);
     GX_SetViewport(0.0f, 0.0f, (f32) rmode->fbWidth, (f32) rmode->efbHeight, 0.0f, 1.0f);
     sProjMode = PROJ_2D;
@@ -2043,16 +2101,8 @@ static void gfx_set_2d_projection(void) {
     sScaleX = (f32) rmode->fbWidth / sGameWidth;
     sScaleY = (f32) rmode->efbHeight / sGameHeight;
 
-    /*
-     * Near and far are -1 and 0 rather than 0 and 1, which looks odd until you
-     * work the formula: it makes the z row `clip.z = -z_in`, so a depth handed
-     * in as 0..1 comes out as 0..-1. That is the span this same function's own
-     * arithmetic produces for an ordinary orthographic box, so whichever end
-     * of it GX treats as the near plane, the values land inside the range
-     * instead of being clipped away. The alternative was to assume which
-     * entries of a projection matrix GX reads and which way its normalised z
-     * points, and the header documents neither.
-     */
+    /* The depth convention of the flat path is documented at
+     * load_2d_projection: z_in = 0 is the near plane, z_in = -1 the far one. */
     memset(identity, 0, sizeof(Mtx));
     identity[0][0] = 1.0f;
     identity[1][1] = 1.0f;
@@ -2140,14 +2190,42 @@ static void tev_plan(const u8 v[4], TevForm *f) {
  * G_CC_BLENDTEX_PRIM -- but only one tile is ever converted and bound, so this
  * is an approximation, and a knowingly visible one.
  */
+/*
+ * GC_TEXEL1: bind the second tile as a second GX texture.
+ *
+ * The RDP's TEXEL1 is whatever tile 1 describes, and DKR uses it: material_init
+ * loads a second, 4-bit intensity image into TMEM 0x100 as tile 1 whenever a
+ * texture carries one, and the draw tables read it through
+ * G_CC_BLENDTEX_MODULATEA_1_PRIM (water), G_CC_BLENDTEX_PRIM (blinking lights)
+ * and G_CC_BLENDT_ENV_ALPHA_A_T1xP (the second font mode). Reading TEXEL1 as a
+ * copy of TEXEL0 -- which is what this file did -- is right only where the two
+ * happen to be the same image.
+ *
+ * A TEV stage samples one map, so a formula that mixes both textures cannot be
+ * one stage. The shape used here is: one extra stage in front that samples
+ * TEXMAP1 and parks its colour and alpha in TEVREG2, and every later stage
+ * reads TEXEL1 from that register. TEVREG2 is the register a two-cycle
+ * combiner uses to park its first cycle's result; while a second texture is
+ * bound that result stays in TEVPREV instead, which is safe for every
+ * second-cycle formula this game emits (all of them are one stage). Set to 0
+ * for the old approximation.
+ */
+#ifndef GC_TEXEL1
+#define GC_TEXEL1 1
+#endif
+
+/* Whether a second texture is bound to TEXMAP1 for the batch being set up, and
+ * therefore whether TEXEL1 lives in TEVREG2. Set by the two state functions. */
+static BOOL sTex1Bound;
+
 static u8 cc_colour(u8 item, BOOL textured, BOOL combinedInReg) {
     switch (item) {
         case CC_COMBINED:   return combinedInReg ? GX_CC_C2 : GX_CC_CPREV;
         case CC_COMBINED_A: return combinedInReg ? GX_CC_A2 : GX_CC_APREV;
-        case CC_TEXEL0:
-        case CC_TEXEL1:     return textured ? GX_CC_TEXC : GX_CC_ONE;
-        case CC_TEXEL0_A:
-        case CC_TEXEL1_A:   return textured ? GX_CC_TEXA : GX_CC_ONE;
+        case CC_TEXEL1:     if (sTex1Bound) { return GX_CC_C2; } /* fall through */
+        case CC_TEXEL0:     return textured ? GX_CC_TEXC : GX_CC_ONE;
+        case CC_TEXEL1_A:   if (sTex1Bound) { return GX_CC_A2; } /* fall through */
+        case CC_TEXEL0_A:   return textured ? GX_CC_TEXA : GX_CC_ONE;
         case CC_PRIM:       return GX_CC_C0;
         case CC_PRIM_A:     return GX_CC_A0;
         case CC_SHADE:      return GX_CC_RASC;
@@ -2165,10 +2243,10 @@ static u8 cc_alpha(u8 item, BOOL textured, BOOL combinedInReg) {
     switch (item) {
         case CC_COMBINED:
         case CC_COMBINED_A: return combinedInReg ? GX_CA_A2 : GX_CA_APREV;
-        case CC_TEXEL0:
         case CC_TEXEL1:
-        case CC_TEXEL0_A:
-        case CC_TEXEL1_A:   return textured ? GX_CA_TEXA : GX_CA_KONST;
+        case CC_TEXEL1_A:   if (sTex1Bound) { return GX_CA_A2; } /* fall through */
+        case CC_TEXEL0:
+        case CC_TEXEL0_A:   return textured ? GX_CA_TEXA : GX_CA_KONST;
         case CC_PRIM:
         case CC_PRIM_A:     return GX_CA_A0;
         case CC_SHADE:
@@ -2294,9 +2372,26 @@ static void tev_emit_fog(u32 stage) {
     GX_SetTevAlphaOp((u8) stage, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1, GX_TRUE, GX_TEVPREV);
 }
 
+/* Does the combiner, as currently set, read TEXEL1 in a cycle that runs? */
+static BOOL combiner_uses_texel1(void) {
+    BOOL twoCycle = ((sOtherModeH >> 20) & 3) == 1;
+    u32 c, k;
+
+    for (c = 0; c < (twoCycle ? 2u : 1u); c++) {
+        for (k = 0; k < 4; k++) {
+            if (sCombine.col[c][k] == CC_TEXEL1 || sCombine.col[c][k] == CC_TEXEL1_A ||
+                sCombine.alp[c][k] == CC_TEXEL1 || sCombine.alp[c][k] == CC_TEXEL1_A) {
+                return TRUE;
+            }
+        }
+    }
+    return FALSE;
+}
+
 static void apply_combiner(BOOL textured) {
     BOOL twoCycle = ((sOtherModeH >> 20) & 3) == 1; /* G_MDSFT_CYCLETYPE */
-    u32 stage;
+    BOOL tex1 = textured && sTex1Bound;
+    u32 stage = 0;
 
     GX_SetNumChans(1);
     GX_SetChanCtrl(GX_COLOR0A0, GX_DISABLE, GX_SRC_REG, GX_SRC_VTX, GX_LIGHTNULL,
@@ -2315,18 +2410,33 @@ static void apply_combiner(BOOL textured) {
     GX_SetTevColor(GX_TEVREG0, sPrimColor);
     GX_SetTevColor(GX_TEVREG1, sEnvColor);
 
+    if (tex1) {
+        /* The second texture, sampled once into TEVREG2 through the same
+         * coordinates as the first. Every stage after this one reads TEXEL1
+         * from there (see cc_colour / cc_alpha). */
+        GX_SetTevOrder(GX_TEVSTAGE0, GX_TEXCOORD0, GX_TEXMAP1, GX_COLOR0A0);
+        GX_SetTevColorIn(GX_TEVSTAGE0, GX_CC_ZERO, GX_CC_ZERO, GX_CC_ZERO, GX_CC_TEXC);
+        GX_SetTevColorOp(GX_TEVSTAGE0, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1, GX_TRUE, GX_TEVREG2);
+        GX_SetTevAlphaIn(GX_TEVSTAGE0, GX_CA_ZERO, GX_CA_ZERO, GX_CA_ZERO, GX_CA_TEXA);
+        GX_SetTevAlphaOp(GX_TEVSTAGE0, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1, GX_TRUE, GX_TEVREG2);
+        GX_SetTevKAlphaSel(GX_TEVSTAGE0, GX_TEV_KASEL_1);
+        stage = 1;
+    }
+
     if (twoCycle) {
         /* The second cycle reads the first's result as COMBINED. Parking that
          * in register 2 instead of leaving it in TEVPREV is what makes the
          * two-stage general case safe: a stage of the second cycle overwrites
          * TEVPREV, and an operand still reading COMBINED from there would pick
-         * up the half-finished value. */
-        stage = tev_emit_cycle(0, sCombine.col[0], sCombine.alp[0], textured, FALSE,
-                               GX_TEVREG2);
-        stage = tev_emit_cycle(stage, sCombine.col[1], sCombine.alp[1], textured, TRUE,
+         * up the half-finished value. With a second texture bound the register
+         * holds TEXEL1 instead and COMBINED stays in TEVPREV, which every
+         * second cycle DKR emits -- all single-stage -- reads correctly. */
+        stage = tev_emit_cycle(stage, sCombine.col[0], sCombine.alp[0], textured, FALSE,
+                               tex1 ? GX_TEVPREV : GX_TEVREG2);
+        stage = tev_emit_cycle(stage, sCombine.col[1], sCombine.alp[1], textured, !tex1,
                                GX_TEVPREV);
     } else {
-        stage = tev_emit_cycle(0, sCombine.col[0], sCombine.alp[0], textured, FALSE,
+        stage = tev_emit_cycle(stage, sCombine.col[0], sCombine.alp[0], textured, FALSE,
                                GX_TEVPREV);
     }
 
@@ -2453,7 +2563,9 @@ static void apply_render_mode(void) {
     if ((rm & RM_CVG_X_ALPHA) != 0 || (rm & RM_ALPHACOMPARE) == RM_AC_THRESHOLD) {
         u8 ref = ((rm & RM_ALPHACOMPARE) == RM_AC_THRESHOLD) ? sBlendColor.a : 128;
 
-        GX_SetAlphaCompare(GX_GREATER, ref, GX_AOP_AND, GX_ALWAYS, 0);
+        /* The RDP's threshold test discards a pixel whose alpha is *below*
+         * the reference, so equality passes: GX_GEQUAL, not GX_GREATER. */
+        GX_SetAlphaCompare(GX_GEQUAL, ref, GX_AOP_AND, GX_ALWAYS, 0);
         GX_SetZCompLoc(GX_FALSE);
     } else {
         GX_SetAlphaCompare(GX_ALWAYS, 0, GX_AOP_AND, GX_ALWAYS, 0);
@@ -2497,16 +2609,46 @@ static void apply_render_mode(void) {
  * font.c draws every character with G_CC_ENV_DECALA, which takes the glyph's
  * shape from the texture's alpha and its colour from ENVIRONMENT.
  */
+/*
+ * The second texture, if the combiner wants one and tile 1 has an image.
+ *
+ * Tile 1 is where DKR's material_init puts a texture's companion image
+ * (gDPLoadMultiBlock_4bS into TMEM 0x100, tile 1). Resolved through the same
+ * TMEM bookkeeping and the same cache as tile 0; NULL when the combiner never
+ * names TEXEL1 or nothing was loaded there, in which case TEXEL1 keeps reading
+ * as TEXEL0 the way it always did.
+ */
+static GXTexObj *resolve_texel1(void) {
+    const TileDesc *t = &sTiles[1];
+    TileImage img;
+
+    if (!GC_TEXEL1 || !combiner_uses_texel1() || !tile_image(t, &img)) {
+        return NULL;
+    }
+    return texture_get(img.addr, t->fmt, t->siz, img.width, img.height, img.stride, img.swapOdd,
+                       img.tlutAddr, cm_to_gx(t->cms), cm_to_gx(t->cmt), tex_filter());
+}
+
+static void bind_texel1(void) {
+    GXTexObj *tex1 = resolve_texel1();
+
+    sTex1Bound = tex1 != NULL;
+    if (tex1 != NULL) {
+        GX_LoadTexObj(tex1, GX_TEXMAP1);
+    }
+}
+
 static void gfx_set_textured_state(GXTexObj *tex) {
     GX_ClearVtxDesc();
     GX_SetVtxDesc(GX_VA_POS, GX_DIRECT);
     GX_SetVtxDesc(GX_VA_CLR0, GX_DIRECT);
     GX_SetVtxDesc(GX_VA_TEX0, GX_DIRECT);
-    GX_SetVtxAttrFmt(GX_VTXFMT1, GX_VA_POS, GX_POS_XY, GX_F32, 0);
+    GX_SetVtxAttrFmt(GX_VTXFMT1, GX_VA_POS, GX_POS_XYZ, GX_F32, 0);
     GX_SetVtxAttrFmt(GX_VTXFMT1, GX_VA_CLR0, GX_CLR_RGBA, GX_RGBA8, 0);
     GX_SetVtxAttrFmt(GX_VTXFMT1, GX_VA_TEX0, GX_TEX_ST, GX_F32, 0);
 
     GX_LoadTexObj(tex, GX_TEXMAP0);
+    bind_texel1();
     apply_combiner_current(TRUE);
     apply_render_mode();
 }
@@ -2535,9 +2677,11 @@ static void gfx_set_3d_state(GXTexObj *tex) {
     GX_SetVtxAttrFmt(GX_VTXFMT3, GX_VA_CLR0, GX_CLR_RGBA, GX_RGBA8, 0);
     GX_SetVtxAttrFmt(GX_VTXFMT3, GX_VA_TEX0, GX_TEX_ST, GX_F32, 0);
 
+    sTex1Bound = FALSE;
     if (tex != NULL) {
         GX_SetVtxDesc(GX_VA_TEX0, GX_DIRECT);
         GX_LoadTexObj(tex, GX_TEXMAP0);
+        bind_texel1();
     }
 
     apply_combiner_current(tex != NULL);
@@ -2552,13 +2696,13 @@ static void gfx_set_3d_state(GXTexObj *tex) {
 static void gfx_draw_rect(f32 x0, f32 y0, f32 x1, f32 y1, GXColor c) {
     load_2d_projection();
     GX_Begin(GX_QUADS, GX_VTXFMT0, 4);
-    GX_Position2f32(x0, y0);
+    GX_Position3f32(x0, y0, FLAT_Z);
     GX_Color4u8(c.r, c.g, c.b, c.a);
-    GX_Position2f32(x1, y0);
+    GX_Position3f32(x1, y0, FLAT_Z);
     GX_Color4u8(c.r, c.g, c.b, c.a);
-    GX_Position2f32(x1, y1);
+    GX_Position3f32(x1, y1, FLAT_Z);
     GX_Color4u8(c.r, c.g, c.b, c.a);
-    GX_Position2f32(x0, y1);
+    GX_Position3f32(x0, y1, FLAT_Z);
     GX_Color4u8(c.r, c.g, c.b, c.a);
     GX_End();
 }
@@ -2590,7 +2734,18 @@ void gc_gfx_init(void) {
     GX_SetScissor(0, 0, rmode->fbWidth, rmode->efbHeight);
     GX_SetDispCopySrc(0, 0, rmode->fbWidth, rmode->efbHeight);
     GX_SetDispCopyDst(rmode->fbWidth, xfbHeight);
-    GX_SetCopyFilter(rmode->aa, rmode->sample_pattern, GX_TRUE, rmode->vfilter);
+    /*
+     * GC_DEFLICKER: the EFB copy's vertical filter. libogc's interlaced modes
+     * carry a three-line deflicker kernel, which blurs every copy vertically
+     * on purpose. "Every texture reads too smooth" has this as one of its two
+     * candidate causes (the other being 2x magnification of 320-wide art), and
+     * a one-build A/B is cheaper than an argument. 0 disables the filter.
+     */
+#ifndef GC_DEFLICKER
+#define GC_DEFLICKER 1
+#endif
+    GX_SetCopyFilter(rmode->aa, rmode->sample_pattern, GC_DEFLICKER ? GX_TRUE : GX_FALSE,
+                     rmode->vfilter);
     GX_SetFieldMode(rmode->field_rendering,
                     ((rmode->viHeight == 2 * rmode->xfbHeight) ? GX_ENABLE : GX_DISABLE));
 
@@ -2867,8 +3022,9 @@ static void gfx_fill_rect(u32 w0, u32 w1) {
         GX_ClearVtxDesc();
         GX_SetVtxDesc(GX_VA_POS, GX_DIRECT);
         GX_SetVtxDesc(GX_VA_CLR0, GX_DIRECT);
-        GX_SetVtxAttrFmt(GX_VTXFMT0, GX_VA_POS, GX_POS_XY, GX_F32, 0);
+        GX_SetVtxAttrFmt(GX_VTXFMT0, GX_VA_POS, GX_POS_XYZ, GX_F32, 0);
         GX_SetVtxAttrFmt(GX_VTXFMT0, GX_VA_CLR0, GX_CLR_RGBA, GX_RGBA8, 0);
+        sTex1Bound = FALSE;
         apply_combiner_current(FALSE);
         apply_render_mode();
         gfx_draw_rect(ulx, uly, lrx + 1.0f, lry + 1.0f, kWhite);
@@ -3061,7 +3217,13 @@ static void project_corner(const Corner *c, f32 *sx, f32 *sy, f32 *sz) {
      * not this sign, so it was settled by looking at the picture. */
     *sx = (c->x * inv) * sVpScaleX + sVpTransX;
     *sy = -(c->y * inv) * sVpScaleY + sVpTransY;
-    *sz = 0.5f - (c->z * inv) * 0.5f + sDecalBias;
+    /*
+     * The 2D projection now maps z_in to clip.z = -z_in - 1 (see
+     * load_2d_projection), so the near plane (ndc -1) wants z_in = 0 and the
+     * far plane (ndc +1) wants z_in = -1. Nearer is still a larger z_in, so
+     * the decal bias keeps its sign.
+     */
+    *sz = -0.5f - (c->z * inv) * 0.5f + sDecalBias;
 }
 
 /* G_VTX. `struct Vertex` in include/structs.h: three s16 and four u8, ten
@@ -3115,11 +3277,25 @@ static void gfx_vertex(u32 w0, u32 w1) {
         }
 #endif
         if (GC_BILLBOARD && sBillboard && base + i != 0) {
-            /* Vertex 0 is the anchor, already in clip space. */
+            /*
+             * Vertex 0 is the anchor, already in clip space. All four
+             * components are summed, w included.
+             *
+             * The header's worked example writes the corner as (x+32, y, z, w)
+             * and this used to read that as "w is taken from the anchor". It is
+             * not: the microcode adds the whole clip vector, and the corner's
+             * own w -- m[3][3] of the billboard matrix, 1.0 in every matrix
+             * mtxf_billboard builds -- is added to the anchor's. GLideN64's
+             * gSPBillboardVertex, the F3DDKR implementation the emulators
+             * render this game with, does exactly `vtx.w += vtx0.w`. The
+             * difference is nothing at a distance and everything up close: the
+             * HUD draws its sprites off an orthographic anchor whose w is 1, so
+             * every HUD element was twice its size and displaced from centre.
+             */
             sVerts[base + i].x += sVerts[0].x;
             sVerts[base + i].y += sVerts[0].y;
             sVerts[base + i].z += sVerts[0].z;
-            sVerts[base + i].w = sVerts[0].w;
+            sVerts[base + i].w += sVerts[0].w;
         }
 #ifdef GC_DEBUG
         if (gGcBbSeen == 1 && i == 0) {
@@ -3397,10 +3573,17 @@ static void gfx_triangles(u32 w0, u32 w1) {
             if (tri[0].w > 1e-6f && tri[1].w > 1e-6f && tri[2].w > 1e-6f) {
                 f32 px[3], py[3];
                 f32 lox, loy, hix, hiy;
+                f32 darea;
 
                 for (k = 0; k < 3; k++) {
                     px[k] = ((tri[k].x / tri[k].w) * 0.5f + 0.5f) * 1000.0f;
                     py[k] = (0.5f - (tri[k].y / tri[k].w) * 0.5f) * 1000.0f;
+                }
+                /* In per-mille of the screen squared: a triangle smaller than
+                 * a hundredth of a pixel is a point. */
+                darea = (px[1] - px[0]) * (py[2] - py[0]) - (px[2] - px[0]) * (py[1] - py[0]);
+                if (darea < 1e-4f && darea > -1e-4f) {
+                    gGcTrisDegen++;
                 }
                 lox = hix = px[0];
                 loy = hiy = py[0];
@@ -3679,16 +3862,16 @@ static void gfx_tex_rect(u32 w0, u32 w1, u32 stWord, u32 dWord) {
      * the stand-in for a combiner and would double the tint.
      */
     GX_Begin(GX_QUADS, GX_VTXFMT1, 4);
-    GX_Position2f32(ulx, uly);
+    GX_Position3f32(ulx, uly, FLAT_Z);
     GX_Color4u8(0xFF, 0xFF, 0xFF, 0xFF);
     GX_TexCoord2f32(u0, v0);
-    GX_Position2f32(ulx + w, uly);
+    GX_Position3f32(ulx + w, uly, FLAT_Z);
     GX_Color4u8(0xFF, 0xFF, 0xFF, 0xFF);
     GX_TexCoord2f32(u1, v0);
-    GX_Position2f32(ulx + w, uly + h);
+    GX_Position3f32(ulx + w, uly + h, FLAT_Z);
     GX_Color4u8(0xFF, 0xFF, 0xFF, 0xFF);
     GX_TexCoord2f32(u1, v1);
-    GX_Position2f32(ulx, uly + h);
+    GX_Position3f32(ulx, uly + h, FLAT_Z);
     GX_Color4u8(0xFF, 0xFF, 0xFF, 0xFF);
     GX_TexCoord2f32(u0, v1);
     GX_End();
@@ -3916,8 +4099,10 @@ static void run_dl(const GfxCmd *dl) {
     /* Keep the frame that is ending before zeroing it, so the heartbeat can
      * show an alternation rather than a single total. */
     gGcTrisOutHist[gGcTrisHistPos] = gGcTrisOut;
+    gGcTrisDegenHist[gGcTrisHistPos] = gGcTrisDegen;
     gGcTrisHistPos = (gGcTrisHistPos + 1) % TRIS_HIST;
     gGcTrisOut = 0;
+    gGcTrisDegen = 0;
     gGcTrZeroArea = 0;
     gGcTrNoImage = 0;
     gGcTrNoTex = 0;
@@ -4437,6 +4622,70 @@ void gc_gfx_run_dl(const void *dl) {
     gfx_set_2d_projection();
 
     run_dl((const GfxCmd *) dl);
+
+#if GC_2DTEST
+    /*
+     * Two squares in the top-left corner, drawn through the flat path itself
+     * after every list: a magenta fill through gfx_draw_rect, and a mire
+     * through the same vertex format, projection and quad the texture
+     * rectangles use, with the TEV pinned to modulate. Neither depends on any
+     * state the game left behind.
+     *
+     * The photographs of the console show every texture rectangle the game
+     * draws -- text, HUD, logo -- producing no pixels, mire or not, while the
+     * log counts them as drawn. One run with this on splits three cases that
+     * no counter can: no square at all means the flat path is dead at the GX
+     * level; the fill without the mire means the textured stage of it; both
+     * squares mean the path is fine and it is the game's own state that kills
+     * its rectangles.
+     */
+    {
+        static u8 sMire[32 * 32 * 4] __attribute__((aligned(32)));
+        static GXTexObj sMireObj;
+        static BOOL sMireReady;
+        GXColor magenta = { 0xFF, 0x00, 0xFF, 0xFF };
+
+        if (!sMireReady) {
+            sMireReady = TRUE;
+            convert_test_pattern(32, 32, sMire);
+            DCFlushRange(sMire, sizeof(sMire));
+            GX_InitTexObj(&sMireObj, sMire, 32, 32, GX_TF_RGBA8, GX_CLAMP, GX_CLAMP, GX_FALSE);
+            GX_InitTexObjFilterMode(&sMireObj, GX_NEAR, GX_NEAR);
+        }
+        GX_InvalidateTexAll();
+        gfx_set_2d_state();
+        gfx_draw_rect(4.0f, 4.0f, 36.0f, 36.0f, magenta);
+
+        GX_ClearVtxDesc();
+        GX_SetVtxDesc(GX_VA_POS, GX_DIRECT);
+        GX_SetVtxDesc(GX_VA_CLR0, GX_DIRECT);
+        GX_SetVtxDesc(GX_VA_TEX0, GX_DIRECT);
+        GX_SetVtxAttrFmt(GX_VTXFMT1, GX_VA_POS, GX_POS_XYZ, GX_F32, 0);
+        GX_SetVtxAttrFmt(GX_VTXFMT1, GX_VA_CLR0, GX_CLR_RGBA, GX_RGBA8, 0);
+        GX_SetVtxAttrFmt(GX_VTXFMT1, GX_VA_TEX0, GX_TEX_ST, GX_F32, 0);
+        GX_LoadTexObj(&sMireObj, GX_TEXMAP0);
+        apply_combiner_pinned(TRUE);
+        GX_SetBlendMode(GX_BM_NONE, GX_BL_ONE, GX_BL_ZERO, GX_LO_CLEAR);
+        GX_SetZMode(GX_FALSE, GX_ALWAYS, GX_FALSE);
+        GX_SetAlphaCompare(GX_ALWAYS, 0, GX_AOP_AND, GX_ALWAYS, 0);
+        load_2d_projection();
+        GX_Begin(GX_QUADS, GX_VTXFMT1, 4);
+        GX_Position3f32(40.0f, 4.0f, FLAT_Z);
+        GX_Color4u8(0xFF, 0xFF, 0xFF, 0xFF);
+        GX_TexCoord2f32(0.0f, 0.0f);
+        GX_Position3f32(72.0f, 4.0f, FLAT_Z);
+        GX_Color4u8(0xFF, 0xFF, 0xFF, 0xFF);
+        GX_TexCoord2f32(1.0f, 0.0f);
+        GX_Position3f32(72.0f, 36.0f, FLAT_Z);
+        GX_Color4u8(0xFF, 0xFF, 0xFF, 0xFF);
+        GX_TexCoord2f32(1.0f, 1.0f);
+        GX_Position3f32(40.0f, 36.0f, FLAT_Z);
+        GX_Color4u8(0xFF, 0xFF, 0xFF, 0xFF);
+        GX_TexCoord2f32(0.0f, 1.0f);
+        GX_End();
+        gfx_set_2d_state();
+    }
+#endif
     MARK(gGcDlOut);
 }
 

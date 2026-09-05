@@ -302,8 +302,27 @@ static void a_adpcm_dec(u8 flags, s16 *state) {
             int j, k;
 
             for (j = 0; j < 4; j++) {
-                ins[j * 2] = (s16) ((((*in >> 4) << 28) >> 28) << shift);
-                ins[j * 2 + 1] = (s16) ((((*in++ & 0xf) << 28) >> 28) << shift);
+                /*
+                 * Sign-extend each nibble explicitly. The reference writes
+                 * `((n << 28) >> 28)` on an int, which is a signed overflow
+                 * for n >= 8 -- undefined in C, and a compiler is entitled to
+                 * decide it cannot happen and drop the arithmetic shift.
+                 * sm64-port lives with it on the compilers it is built with;
+                 * this port is built with GCC 16, and a decoder that turns
+                 * every negative nibble positive is exactly a decoder whose
+                 * output is full of steps.
+                 */
+                s32 hi = *in >> 4;
+                s32 lo = *in++ & 0xF;
+
+                if (hi & 8) {
+                    hi -= 16;
+                }
+                if (lo & 8) {
+                    lo -= 16;
+                }
+                ins[j * 2] = (s16) (hi << shift);
+                ins[j * 2 + 1] = (s16) (lo << shift);
             }
             for (j = 0; j < 8; j++) {
                 s32 acc = tbl[0][j] * prev2 + tbl[1][j] * prev1 + (ins[j] << 11);
@@ -609,6 +628,88 @@ u32 gGcAudioPeak;
 u32 gGcAudioSamples;
 u32 gGcAudioClipped;
 
+/*
+ * Where the clicks are born.
+ *
+ * The DAC side counts a thousand discontinuities a second in a race and none
+ * in the menus (`ai steps`), with zero underruns -- so the steps are in the
+ * mixed signal, not in its delivery. Every voice passes through three stages
+ * that carry state from one 160-sample chunk to the next: the ADPCM decoder,
+ * the resampler and the envelope mixer. A stage whose output does not join up
+ * with its own previous chunk is a stage whose state handling is wrong, and
+ * which one it is decides what to read. So each stage remembers the last
+ * sample it produced (or, for the envelope mixer, received) per state pointer
+ * -- the state pointer is the voice -- and counts the joins that jump by more
+ * than a third of full scale. Steps *inside* a chunk are counted too, apart.
+ */
+#define AUD_STEP_THRESHOLD 11000
+#define AUD_VOICE_SLOTS 64
+
+u32 gGcAudStepAdpcmJoin, gGcAudStepAdpcmIn;
+u32 gGcAudStepResampJoin, gGcAudStepResampIn;
+u32 gGcAudStepEnvJoin, gGcAudStepEnvIn;
+
+typedef struct {
+    const void *key;
+    s16 last;
+} AudVoiceLast;
+
+static AudVoiceLast sVoiceLast[3][AUD_VOICE_SLOTS];
+
+/* The last sample this stage produced for this voice; -1 slot state means
+ * "never seen", in which case nothing is counted for the join. */
+static s16 *voice_last(int stage, const void *key) {
+    AudVoiceLast *tbl = sVoiceLast[stage];
+    int i;
+
+    for (i = 0; i < AUD_VOICE_SLOTS; i++) {
+        if (tbl[i].key == key) {
+            return &tbl[i].last;
+        }
+    }
+    for (i = 0; i < AUD_VOICE_SLOTS; i++) {
+        if (tbl[i].key == NULL) {
+            tbl[i].key = key;
+            tbl[i].last = 0;
+            return NULL;
+        }
+    }
+    return NULL;
+}
+
+static void note_steps(int stage, const void *key, const s16 *samples, int n, BOOL init,
+                       u32 *join, u32 *inside) {
+    s16 *last = voice_last(stage, key);
+    int i;
+
+    if (n <= 0) {
+        return;
+    }
+    if (last != NULL && !init) {
+        s32 d = (s32) samples[0] - (s32) *last;
+
+        if (d > AUD_STEP_THRESHOLD || d < -AUD_STEP_THRESHOLD) {
+            (*join)++;
+        }
+    }
+    for (i = 1; i < n; i++) {
+        s32 d = (s32) samples[i] - (s32) samples[i - 1];
+
+        if (d > AUD_STEP_THRESHOLD || d < -AUD_STEP_THRESHOLD) {
+            (*inside)++;
+        }
+    }
+    if (last != NULL) {
+        *last = samples[n - 1];
+    } else {
+        s16 *slot = voice_last(stage, key);
+
+        if (slot != NULL) {
+            *slot = samples[n - 1];
+        }
+    }
+}
+
 #define GC_AUDIO_IGNORE(op) (gGcAudioIgnored[op]++)
 
 /*
@@ -647,6 +748,7 @@ static void note_saved(const s16 *samples, int nbytes) {
 #else
 #define GC_AUDIO_IGNORE(op)          ((void) 0)
 #define note_saved(samples, nbytes)  ((void) 0)
+#define note_steps(stage, key, samples, n, init, join, inside) ((void) 0)
 #endif
 
 /* ---- the walker ---------------------------------------------------------- */
@@ -702,6 +804,12 @@ void gc_audio_run_cmds(const void *cmdList, unsigned int sizeBytes) {
 
             case A_ADPCM:
                 a_adpcm_dec((u8) (w0 >> 16), (s16 *) dram(w1));
+#ifdef GC_DEBUG
+                note_steps(0, dram(w1), DMEM_S16(sRspa.out) + 16,
+                           ROUND_UP_32(sRspa.nbytes) / (int) sizeof(s16),
+                           ((w0 >> 16) & (A_INIT | A_LOOP)) != 0,
+                           &gGcAudStepAdpcmJoin, &gGcAudStepAdpcmIn);
+#endif
                 break;
 
             case A_CLEARBUFF:
@@ -709,6 +817,13 @@ void gc_audio_run_cmds(const void *cmdList, unsigned int sizeBytes) {
                 break;
 
             case A_ENVMIXER:
+#ifdef GC_DEBUG
+                /* The input, before mixing: this is the resampled, decoded
+                 * voice as the envelope sees it, per voice. */
+                note_steps(2, dram(w1), DMEM_S16(sRspa.in),
+                           ROUND_UP_16(sRspa.nbytes) / (int) sizeof(s16),
+                           ((w0 >> 16) & A_INIT) != 0, &gGcAudStepEnvJoin, &gGcAudStepEnvIn);
+#endif
                 a_env_mixer((u8) (w0 >> 16), (s16 *) dram(w1));
                 break;
 
@@ -718,6 +833,12 @@ void gc_audio_run_cmds(const void *cmdList, unsigned int sizeBytes) {
 
             case A_RESAMPLE:
                 a_resample((u8) (w0 >> 16), (u16) w0, (s16 *) dram(w1));
+#ifdef GC_DEBUG
+                note_steps(1, dram(w1), DMEM_S16(sRspa.out),
+                           ROUND_UP_16(sRspa.nbytes) / (int) sizeof(s16),
+                           ((w0 >> 16) & A_INIT) != 0, &gGcAudStepResampJoin,
+                           &gGcAudStepResampIn);
+#endif
                 break;
 
             case A_SAVEBUFF: {

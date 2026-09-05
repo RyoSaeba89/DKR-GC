@@ -78,7 +78,18 @@ static u32 stack_size_for(OSId id) {
 static ThreadSlot sThreads[MAX_THREADS];
 
 static u8 to_lwp_priority(OSPri pri) {
-    s32 p = (s32) pri >> 1;
+    /*
+     * Not halved. The file header used to say priorities were halved to fit
+     * LWP's 0..127, and that folded two of the game's threads together: the
+     * scheduler is created at 13 (thread3_main.c:204) and the audio manager at
+     * 12 (audio.c:136), and 13 >> 1 == 12 >> 1. On the N64 the scheduler
+     * strictly preempts the audio manager; at equal LWP priority it had to
+     * wait for the audio manager to block, so a retrace -- and the frame reply
+     * that rides on it -- could be held behind an alAudioFrame in progress.
+     * Every priority the game uses is below 128 except OS_PRIORITY_MAX (255)
+     * for the fault thread, which the clamp takes care of.
+     */
+    s32 p = (s32) pri;
 
     /* LWP_PRIO_IDLE (0) is reserved for libogc's own idle thread; a game
      * thread asking for OS_PRIORITY_IDLE still has to be schedulable. */
