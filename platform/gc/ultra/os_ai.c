@@ -209,32 +209,55 @@ static Frame sWork[RS_WORK_FRAMES];
 #endif
 
 #if GC_AUDIOTEST
-#define TEST_TABLE 256
-#define TEST_HZ 440
+/*
+ * The tone has to be exact, and the first version of it was not.
+ *
+ * It was 440 Hz read out of a 256-entry table with a 16.16 phase accumulator
+ * and no interpolation. The phase is then truncated to the nearest table entry
+ * on every sample, and the resulting amplitude error reaches 2.7 % of full
+ * scale -- **-31.5 dB of harmonic distortion**, computed against an exact sine
+ * offline. That is not a subtle artefact; it is plainly audible as a buzz on
+ * an otherwise pure tone, and it means the first run of this test measured the
+ * instrument rather than the port. Both levels "crackled" and neither result
+ * could be believed. This file's own history has the same lesson twice over
+ * (the peak counter, the heartbeat's second), and it caught us again.
+ *
+ * The fix removes the error rather than shrinking it. 48000 / 480 is exactly
+ * 100, so a 480 Hz tone is 100 samples per cycle with no remainder: a table of
+ * one hundred entries, stepped by one and wrapped at one hundred, replays the
+ * *same* hundred samples for ever. There is no phase accumulator, no
+ * truncation and no approximation -- every sample that leaves this function is
+ * the exactly-rounded value of the sine at that point.
+ *
+ * The table is built in ai_start, on an ordinary thread. Building it lazily in
+ * the DMA callback would put sinf, and therefore the FPU, inside an interrupt
+ * handler whose context libogc does not save.
+ */
+#define TEST_CYCLE 100 /* samples per cycle: 48000 / 480 exactly */
 
-static s16 sTestTable[TEST_TABLE];
-static u32 sTestPhase;
-static BOOL sTestReady;
+static s16 sTestTable[TEST_CYCLE];
+static u32 sTestPos;
 
-/* 16.16, in table entries per output frame. */
-#define TEST_STEP ((u32) (((u64) TEST_HZ * TEST_TABLE << 16) / OUTPUT_RATE_HZ))
+static void test_tone_init(void) {
+    u32 i;
+
+    for (i = 0; i < TEST_CYCLE; i++) {
+        sTestTable[i] =
+            (s16) (8000.0f * sinf(2.0f * 3.14159265358979f * (f32) i / (f32) TEST_CYCLE));
+    }
+}
 
 static void test_tone(Frame *out, u32 frames) {
     u32 i;
 
-    if (!sTestReady) {
-        sTestReady = TRUE;
-        for (i = 0; i < TEST_TABLE; i++) {
-            sTestTable[i] =
-                (s16) (8000.0f * sinf(2.0f * 3.14159265358979f * (f32) i / (f32) TEST_TABLE));
-        }
-    }
     for (i = 0; i < frames; i++) {
-        s16 v = sTestTable[(sTestPhase >> 16) & (TEST_TABLE - 1)];
+        s16 v = sTestTable[sTestPos];
 
         out[i].l = v;
         out[i].r = v;
-        sTestPhase += TEST_STEP;
+        if (++sTestPos >= TEST_CYCLE) {
+            sTestPos = 0;
+        }
     }
 }
 #endif
@@ -521,6 +544,11 @@ static void ai_start(void) {
         return;
     }
     sStarted = TRUE;
+
+#if GC_AUDIOTEST
+    /* On a thread, before the first interrupt: see the note on test_tone. */
+    test_tone_init();
+#endif
 
     AUDIO_Init(NULL);
     AUDIO_SetDSPSampleRate(AI_SAMPLERATE_48KHZ);

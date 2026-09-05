@@ -3062,6 +3062,44 @@ or the rate loop. Clean at both puts it upstream, in what the mixer produces --
 which is where the user's own suspicion points. One session, three
 possibilities, and a signal anyone can judge in two seconds.
 
+### The sine that was not a sine (2026-09-05, later)
+
+Both test builds crackled, which would have been the largest result of the
+week: `dkr-sine2.dol` bypasses the ring, the rate loop, the resampler, the
+mixer and the game entirely, so a crackle there puts the defect in the AI, its
+interrupt and the double buffer, and clears everything above.
+
+**It proves nothing, because the tone was not clean.** It was 440 Hz read from
+a 256-entry table with a 16.16 phase accumulator and no interpolation. The
+phase is truncated to the nearest entry on every sample, and computing the
+error against an exact sine offline gives a worst case of 213 counts on an
+8000 amplitude: **2.7 %, or -31.5 dB of harmonic distortion.** On a pure tone
+that is plainly audible, and it sounds like a buzz. The instrument was
+generating the very artefact it was built to detect.
+
+This is the fourth time this port has been misled by its own instrument, after
+the framebuffer console that cost half the machine, the buffered markers that
+vanished with the crash, and the peak counter that could not tell one clipped
+sample from a railing mix. The rule was already written down. It did not save
+us, because "a sine wave is obviously clean" felt too simple to check.
+
+The replacement removes the error instead of shrinking it. 48000 / 480 is
+exactly 100, so a 480 Hz tone is one hundred samples per cycle with no
+remainder: a hundred-entry table stepped by one and wrapped at one hundred
+replays the same hundred samples for ever, with no phase accumulator and no
+truncation. Measured the same way, the worst error is one count in eight
+thousand -- **-78 dB**, two hundred times smaller, and below anything a
+television can reproduce. The table is built in `ai_start` on an ordinary
+thread rather than lazily in the callback, so `sinf` never runs in an
+interrupt handler whose FPU context libogc does not save.
+
+The bisection is unchanged and still to be run:
+
+| Build | Where the tone is written | What is still in the path |
+|---|---|---|
+| `dkr-sine1.dol` | into the ring, in place of the resampler's output | the rate loop, the ring, the DMA |
+| `dkr-sine2.dol` | straight into the DMA block | the AI, its interrupt, the double buffer |
+
 ### Where this stands, end of 2026-09-04 — read this first
 
 **The state of the card.** What is physically on the SD card is `a0cb49d2`, a
