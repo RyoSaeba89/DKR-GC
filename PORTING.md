@@ -3016,6 +3016,52 @@ finished, and it should read 0.
 `A_POLEF` and the delay line are cleared. Nor the mixer's arithmetic, diffed
 against `ref-sm64gc` line by line the session before.
 
+### The volume list was the same mistake twice, and a sine to split the audio (2026-09-05, v0.0.3-alpha)
+
+**Saving works on hardware** -- `dkr.eep`, 512 bytes, appeared beside the log.
+But the fix was a list of three volume names, and that is the same mistake as
+the single wrong one it replaced. An SD2SP2 lives on serial port 2, which
+libogc2 drives through `__io_gcsd2` and which is none of `sd:`, `carda:` or
+`cardb:`; a PicoBoot or IPL-replacement setup mounts whatever its loader
+found. Anyone not using an SD Gecko would have had the silent no-save all over
+again.
+
+Nothing is hard-coded now. newlib keeps every mounted device in
+`devoptab_list` (`sys/iosupport.h`) and libfat registers its volumes there, so
+the port enumerates that list and gets exactly the filesystems this console
+has, whatever the hardware. The log's own volume is tried first because it is
+demonstrably writable and is where the user put the game. The game's folder is
+created if the volume has none.
+
+**The crackle: `ai cb late` was not it, and the next step is a sine.** The
+double-buffer fix did not change the sound, and the same counter still reads
+`ai cb late 5-8, longest 14409 us` per beat. Reading it properly settles what
+it means: `ai cb` advances by 113 per 1200 ms beat, and 113 blocks of 512
+frames at 48 kHz is 1205 ms. The callbacks are *on average exactly on time*,
+so the AI is not stalling; what the counter measures is interrupt latency
+jitter, and the intervals average out. It is not the crackle.
+
+That exhausts the counters. Every one of them says the delivery is correct --
+`ai drops 0`, `ringMin` above 2400, `under` frozen at its initial fill, `rate
+step` settled, the mixer's three stateful stages diffed against `ref-sm64gc`
+line by line -- and the console still crackles. When every number says a thing
+is fine and the ear says it is not, the numbers are measuring the wrong
+quantity.
+
+So the next measurement needs no counter: **a 440 Hz sine, injected at two
+depths** (`GC_AUDIOTEST`).
+
+| Build | Where the tone is written | What is still in the path |
+|---|---|---|
+| `dkr-sine1.dol` | into the ring, in place of the resampler's output | the rate loop, the ring, the DMA |
+| `dkr-sine2.dol` | straight into the DMA block | the AI, its interrupt, the double buffer |
+
+Crackle at level 2 puts the defect in the delivery and clears the mixer and
+the whole game side outright. Clean at 2 and crackle at 1 puts it in the ring
+or the rate loop. Clean at both puts it upstream, in what the mixer produces --
+which is where the user's own suspicion points. One session, three
+possibilities, and a signal anyone can judge in two seconds.
+
 ### Where this stands, end of 2026-09-04 — read this first
 
 **The state of the card.** What is physically on the SD card is `a0cb49d2`, a

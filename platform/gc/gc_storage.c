@@ -54,6 +54,8 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <sys/iosupport.h>
+#include <sys/stat.h>
 
 #include "gc_ultra.h"
 
@@ -206,51 +208,88 @@ static BOOL card_write_blob(s32 chn, const char *name, const void *buf, u32 size
 /* ---- the SD fallback ----------------------------------------------------- */
 
 /*
- * Which volume the save file lives on.
+ * Which volume the save file lives on -- asked of libfat rather than guessed.
  *
- * This used to be `sd:/dkr/<name>`, and that prefix does not exist on a
- * GameCube: libfat names the front SD slot `sd:` on the Wii only, and an SD
- * Gecko is `carda:` or `cardb:`. Every other path in the port -- the asset
- * image, the log, the crash record -- tries the three in turn, and the log on
- * the user's console resolves to `cardb:`. This one did not, so every
- * `fopen` failed silently, `gc_storage_write` returned FALSE, and nothing was
- * ever saved: no `dkr.eep` beside the log, and a game that forgets everything
- * at the power switch.
+ * This started as a single hard-coded `sd:/dkr/<name>`, which is a device that
+ * does not exist on a GameCube at all: `sd:` is the Wii's front slot. Every
+ * `fopen` failed, `gc_storage_write` returned FALSE, and `osEepromWrite`
+ * discarded the save in silence -- the game forgot everything at the power
+ * switch. Replacing it with the three names this port knows (`sd:`, `carda:`,
+ * `cardb:`) fixed it on an SD Gecko and would have been wrong again for the
+ * next person: an SD2SP2 lives on serial port 2 (libogc2's `__io_gcsd2`), and
+ * a PicoBoot or IPL-replacement setup boots from whatever its loader mounted.
+ * Hard-coding a list is the same mistake with more entries.
  *
- * The volume the log found is the authority when there is one -- it is the
- * card the game booted from -- and the three prefixes are tried otherwise.
+ * So nothing is hard-coded. newlib keeps every mounted device in
+ * `devoptab_list` (sys/iosupport.h) and libfat registers its volumes there, so
+ * enumerating it names exactly the filesystems this console actually has,
+ * whatever the hardware. The volume the log opened is tried first -- it is by
+ * definition writable and is where the user put the game -- and the rest
+ * follow in the order libfat mounted them.
  */
-static const char *const kVolumes[] = { "sd:", "carda:", "cardb:" };
+#define STORAGE_MAX_PATHS 8
+
+static BOOL is_std_stream(const char *name) {
+    return strcmp(name, "stdin") == 0 || strcmp(name, "stdout") == 0 ||
+           strcmp(name, "stderr") == 0;
+}
 
 static u32 storage_volume_paths(char paths[][64], u32 max, const char *name) {
     const char *logPath = gc_logfile_path();
+    char logVol[16];
     u32 n = 0;
-    u32 i;
+    int i;
 
+    logVol[0] = '\0';
     if (logPath != NULL) {
         const char *colon = strchr(logPath, ':');
 
-        if (colon != NULL && (u32) (colon - logPath) < 16 && n < max) {
-            snprintf(paths[n], 64, "%.*s:/dkr/%s", (int) (colon - logPath), logPath, name);
+        if (colon != NULL && (u32) (colon - logPath) < sizeof(logVol)) {
+            memcpy(logVol, logPath, (size_t) (colon - logPath));
+            logVol[colon - logPath] = '\0';
+            snprintf(paths[n], 64, "%s:/dkr/%s", logVol, name);
             n++;
         }
     }
-    for (i = 0; i < sizeof(kVolumes) / sizeof(kVolumes[0]) && n < max; i++) {
-        snprintf(paths[n], 64, "%s/dkr/%s", kVolumes[i], name);
+
+    for (i = 0; i < STD_MAX && n < max; i++) {
+        const devoptab_t *dev = devoptab_list[i];
+
+        if (dev == NULL || dev->name == NULL || dev->open_r == NULL) {
+            continue;
+        }
+        if (is_std_stream(dev->name) || strcmp(dev->name, logVol) == 0) {
+            continue;
+        }
+        snprintf(paths[n], 64, "%s:/dkr/%s", dev->name, name);
         n++;
     }
     return n;
 }
 
+/* The game's folder, created if the volume does not have one. A user who
+ * copied only the executable would otherwise have nowhere to save. */
+static void ensure_dir(const char *filePath) {
+    char dir[64];
+    const char *slash = strrchr(filePath, '/');
+
+    if (slash == NULL || (u32) (slash - filePath) >= sizeof(dir)) {
+        return;
+    }
+    memcpy(dir, filePath, (size_t) (slash - filePath));
+    dir[slash - filePath] = '\0';
+    mkdir(dir, 0777);
+}
+
 /* Both called with gc_fs_lock already held by the entry point above. */
 static BOOL sd_read_blob(const char *name, void *buf, u32 size) {
-    char paths[4][64];
+    char paths[STORAGE_MAX_PATHS][64];
     u32 n, i;
 
     if (!gc_fat_mount()) {
         return FALSE;
     }
-    n = storage_volume_paths(paths, 4, name);
+    n = storage_volume_paths(paths, STORAGE_MAX_PATHS, name);
     for (i = 0; i < n; i++) {
         FILE *f = fopen(paths[i], "rb");
         size_t got;
@@ -268,17 +307,19 @@ static BOOL sd_read_blob(const char *name, void *buf, u32 size) {
 }
 
 static BOOL sd_write_blob(const char *name, const void *buf, u32 size) {
-    char paths[4][64];
+    char paths[STORAGE_MAX_PATHS][64];
     u32 n, i;
 
     if (!gc_fat_mount()) {
         return FALSE;
     }
-    n = storage_volume_paths(paths, 4, name);
+    n = storage_volume_paths(paths, STORAGE_MAX_PATHS, name);
     for (i = 0; i < n; i++) {
-        FILE *f = fopen(paths[i], "wb");
+        FILE *f;
         size_t put;
 
+        ensure_dir(paths[i]);
+        f = fopen(paths[i], "wb");
         if (f == NULL) {
             continue;
         }

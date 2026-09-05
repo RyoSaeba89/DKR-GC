@@ -176,6 +176,69 @@ static Frame sHist[RS_TAPS];
 #define RS_WORK_FRAMES 4096
 static Frame sWork[RS_WORK_FRAMES];
 
+/*
+ * GC_AUDIOTEST: replace the game's audio with a pure 440 Hz tone, at one of
+ * two depths, and listen.
+ *
+ * Every audio counter this port has says the delivery is correct -- `ai drops
+ * 0`, `ringMin` above 2400, `under` frozen at its initial fill, the mixer
+ * diffed against ref-sm64gc line by line -- and the console still crackles.
+ * When every number says a thing is fine and the ear says it is not, the
+ * numbers are measuring the wrong quantity, and the way out is a signal whose
+ * correctness needs no counter at all: a sine wave either sounds clean or it
+ * does not, and anyone can hear the difference in two seconds.
+ *
+ * The two levels bisect the pipeline:
+ *
+ *   1  the tone is written into the ring in place of the resampler's output,
+ *      so the rate loop, the ring and the DMA all still run exactly as they
+ *      do normally. Clean here means everything below the mixer is sound.
+ *   2  the tone is written straight into the DMA block, so the ring and the
+ *      push path are bypassed entirely. This is the AI, the interrupt and the
+ *      double buffer, and nothing else.
+ *
+ * Crackle at 2 puts the defect in the delivery, which would clear the mixer
+ * and the whole game side outright. Clean at 2 and crackle at 1 puts it in
+ * the ring or the rate loop. Clean at both puts it upstream, in what the
+ * mixer produces. One session, three possibilities, no counters.
+ *
+ * Never ship either at anything but 0.
+ */
+#ifndef GC_AUDIOTEST
+#define GC_AUDIOTEST 0
+#endif
+
+#if GC_AUDIOTEST
+#define TEST_TABLE 256
+#define TEST_HZ 440
+
+static s16 sTestTable[TEST_TABLE];
+static u32 sTestPhase;
+static BOOL sTestReady;
+
+/* 16.16, in table entries per output frame. */
+#define TEST_STEP ((u32) (((u64) TEST_HZ * TEST_TABLE << 16) / OUTPUT_RATE_HZ))
+
+static void test_tone(Frame *out, u32 frames) {
+    u32 i;
+
+    if (!sTestReady) {
+        sTestReady = TRUE;
+        for (i = 0; i < TEST_TABLE; i++) {
+            sTestTable[i] =
+                (s16) (8000.0f * sinf(2.0f * 3.14159265358979f * (f32) i / (f32) TEST_TABLE));
+        }
+    }
+    for (i = 0; i < frames; i++) {
+        s16 v = sTestTable[(sTestPhase >> 16) & (TEST_TABLE - 1)];
+
+        out[i].l = v;
+        out[i].r = v;
+        sTestPhase += TEST_STEP;
+    }
+}
+#endif
+
 static s16 clamp_s16(f32 v) {
     if (v > 32767.0f) {
         return 32767;
@@ -314,6 +377,14 @@ static void fill_block(u8 *buf) {
     u32 i;
 #ifdef GC_DEBUG
     u32 runHere = 0;
+#endif
+
+#if GC_AUDIOTEST == 2
+    /* The ring and everything above it are bypassed: what reaches the DAC is
+     * generated here, one block at a time, with continuous phase. */
+    test_tone(out, DMA_FRAMES);
+    DCFlushRange(buf, DMA_BYTES);
+    return;
 #endif
 
     for (i = 0; i < DMA_FRAMES; i++) {
@@ -688,6 +759,13 @@ s32 osAiSetNextBuffer(void *buf, u32 len) {
         const Frame *s = &sWork[i - RS_HALF + 1];
         Frame *dst = &sRing[sRingWrite];
 
+#if GC_AUDIOTEST == 1
+        /* The tone takes the resampler's place, one frame per iteration, so
+         * the ring fills and drains at exactly the rate it normally would. */
+        test_tone(dst, 1);
+        (void) h;
+        (void) s;
+#else
         if (gGcAudioMixerImplemented) {
             f32 l = 0.0f;
             f32 r = 0.0f;
@@ -703,6 +781,7 @@ s32 osAiSetNextBuffer(void *buf, u32 len) {
             dst->l = 0;
             dst->r = 0;
         }
+#endif
 
         sRingWrite = (sRingWrite + 1) % RING_FRAMES;
         pos += step;
