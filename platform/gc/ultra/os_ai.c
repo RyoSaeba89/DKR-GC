@@ -151,8 +151,38 @@ static Frame sRing[RING_FRAMES] __attribute__((aligned(32)));
 static volatile u32 sRingRead;
 static volatile u32 sRingWrite;
 
-static u8 sDmaBuf[2][DMA_BYTES] __attribute__((aligned(32)));
-static volatile u32 sDmaIndex;
+/*
+ * Four DMA blocks, not two, and the reason is measured rather than defensive.
+ *
+ * With two, the port was overwriting the block the engine was playing. At the
+ * end of a transfer the AI reloads its address and length registers by itself
+ * -- that is why removing AUDIO_StartDMA from the callback changed nothing --
+ * and those registers still name the block that has just finished, so the
+ * engine starts replaying it *before* the completion interrupt is serviced.
+ * The callback then wrote the next address, which only takes effect at the
+ * following reload, and immediately filled "the block that just finished",
+ * which was in fact the block now playing.
+ *
+ * The recording measures exactly that. A few samples into every block the
+ * content jumps forward by one whole block: 512 frames against a 100-frame
+ * tone cycle is 12 frames of phase, 43.2 degrees. The demodulated recording
+ * shows a phase excursion of 36.6 degrees per block, smoothed by the
+ * demodulator's own low-pass, together with sidebands at the fundamental plus
+ * and minus the block rate that are asymmetric -- 8.2 dB down on one side and
+ * 17.9 on the other -- which is the signature of a periodic phase step, not of
+ * distortion.
+ *
+ * Two blocks cannot fix it: whichever one is filled is either playing now or
+ * playing next. Four gives every block two clear block-times of daylight on
+ * both sides -- it is filled two reloads before it is programmed, and it last
+ * played two reloads ago -- which is safe whether the engine reloads by itself
+ * or waits to be re-armed. It also buys 21 ms of slack against interrupt
+ * latency, where two buffers gave none.
+ */
+#define DMA_BLOCKS 4
+
+static u8 sDmaBuf[DMA_BLOCKS][DMA_BYTES] __attribute__((aligned(32)));
+static volatile u32 sDmaIndex; /* the block whose address is in the registers */
 
 static u32 sGameRate = 22050;
 static BOOL sStarted;
@@ -504,7 +534,7 @@ static void fill_block(u8 *buf) {
  * queue of ready buffers. The port had the two buffers and used them as one.
  */
 static void dma_callback(void) {
-    u8 *next = sDmaBuf[sDmaIndex ^ 1]; /* filled by the previous callback */
+    u32 next;
 
     /*
      * Point the engine at the next block -- and do NOT start it.
@@ -536,8 +566,9 @@ static void dma_callback(void) {
      * blocks are 41 ms rather than 10.7, so it pays the same seam a quarter as
      * often, on music that masks it far better than a sine does.)
      */
-    AUDIO_InitDMA((u32) next, DMA_BYTES);
-    sDmaIndex ^= 1;
+    next = (sDmaIndex + 1) % DMA_BLOCKS;
+    AUDIO_InitDMA((u32) sDmaBuf[next], DMA_BYTES);
+    sDmaIndex = next;
 
 #ifdef GC_DEBUG
     {
@@ -586,8 +617,13 @@ static void dma_callback(void) {
     }
 #endif
 
-    /* And only now the work: the block after the one just latched. */
-    fill_block(sDmaBuf[sDmaIndex ^ 1]);
+    /*
+     * And only now the work, into the block that is furthest from the engine
+     * in both directions: it last played two reloads ago and will not be
+     * programmed for another two. Never the one being played -- which is the
+     * defect this replaces.
+     */
+    fill_block(sDmaBuf[(sDmaIndex + 2) % DMA_BLOCKS]);
 }
 
 static void ai_start(void) {
@@ -616,9 +652,8 @@ static void ai_start(void) {
      * in dma_callback. */
     AUDIO_InitDMA((u32) sDmaBuf[0], DMA_BYTES);
     AUDIO_StartDMA();
-    /* The index names the block the AI is playing, and the *other* one is
-     * always the one already filled and ready to be latched. Both are silence
-     * to begin with, which is the right first block anyway. */
+    /* All four blocks are silence to begin with, so the two that play before
+     * the first filled one arrives are silent rather than stale. */
     sDmaIndex = 0;
 }
 

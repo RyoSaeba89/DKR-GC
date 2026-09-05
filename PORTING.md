@@ -3157,7 +3157,44 @@ Clean means the AI path is sound and the interference comes from what the game
 does. Dirty means the defect is in the AI setup itself and nothing above it
 matters.
 
-### The crackle: one line too many in the DMA callback (2026-09-05, found)
+### The crackle: the port was filling the block it was playing (2026-09-05)
+
+Removing `AUDIO_StartDMA` from the callback changed nothing audible, so the
+section below is wrong about the mechanism -- and the way it is wrong is the
+most useful thing in it. **The audio kept playing without it.** An engine that
+needed re-arming would have stopped dead after one block. So the AI reloads
+its address and length registers by itself at the end of every transfer, and
+those registers still name the block that has just finished. **The engine
+starts replaying that block before the completion interrupt is even
+serviced.**
+
+Which means the callback's last line was writing into the block currently
+being played. It wrote the next address -- correctly, but that only takes
+effect at the following reload -- and then filled "the block that just
+finished", which the hardware had already gone back to.
+
+The recording measures exactly that, and this is what a spectrum is for:
+
+* A few samples into every block the content jumps forward by one whole
+  block. 512 frames against a 100-frame tone cycle is 12 frames of phase, or
+  **43.2 degrees**. The demodulated recording shows a per-block phase
+  excursion of **36.6 degrees**, and the demodulator's own low-pass rounds
+  the corners off a sawtooth, so the two agree.
+* The sidebands at the fundamental plus and minus the block rate are
+  **asymmetric** -- 8.2 dB down below, 17.9 dB above. Pure amplitude
+  modulation is symmetric; asymmetry means phase modulation is present, which
+  is the signature of a periodic phase step rather than of a gap or of
+  distortion.
+* The tone's own harmonics stay at -40 dB throughout, so nothing is
+  distorting the samples. They are being spliced.
+
+**Two blocks cannot fix this**, whichever one is filled: it is either playing
+now or playing next. The port uses **four** now. Each is filled two reloads
+before it is programmed and last played two reloads ago, which is safe whether
+the engine reloads by itself or waits to be re-armed, and it buys 21 ms of
+slack against interrupt latency where two buffers gave none.
+
+### What the StartDMA change actually established (2026-09-05, superseded)
 
 A recording of the level-3 tone settled it in one analysis, after the bisection
 had narrowed the search to the delivery.
