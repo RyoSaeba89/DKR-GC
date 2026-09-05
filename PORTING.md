@@ -2968,6 +2968,54 @@ still not been listened to; it is the other half.
 **Shipped:** `dkr.dol` md5 `abe7073c…`, `dkr-nofx.dol` md5 `882f37ec…`,
 both `GC_DEBUG=1 GC_EMBED_ASSETS=0`; ELFs frozen by md5.
 
+### The save had nowhere to go, and the DAC was latched last (2026-09-05, v0.0.2-alpha)
+
+The `abe7073c` run: **every 2D sprite is correct** -- the 32-bit pair exchange
+was the balloon. Two defects left, and the log named both.
+
+**The save wrote to a volume that does not exist.** `gc_storage.c`'s SD
+fallback built its path as `sd:/dkr/<name>`. There is no `sd:` device on a
+GameCube -- libfat names the Wii's front slot that way, while an SD Gecko is
+`carda:` or `cardb:`. Every other path in the port already tries all three in
+turn (the asset image, the log, the crash record), and on this console the log
+resolves to `cardb:`. This one did not, so `fopen` failed, `sd_write_blob`
+returned FALSE, `gc_storage_write` returned FALSE, and `osEepromWrite`
+discarded it in silence: no `dkr.eep` on the card, nothing remembered across a
+power cycle. The memory card path above it was never reached either, because
+the user has no memory card -- slot B is the SD Gecko and slot A is empty. The
+fallback now asks `gc_logfile_path()` which volume the log actually opened and
+tries that first, then the three prefixes.
+
+**The crackle was the order of two lines in the DMA callback.** Measured:
+
+```
+ai cb late 8, longest 14260 us (block 10666 us)
+```
+
+Eight times a beat -- seven a second -- the callback arrived later than a whole
+block, which means the AI reached the end of its buffer with no next address
+in its registers. The AI has one "next" pair and latches it when the current
+block ends; miss that instant and there is nothing defined coming out of the
+DAC until the register is written. Seven holes a second is what "ça grésille"
+is, and no ring-depth counter can see it because the ring is full throughout
+(`ai drops 0`, `ringMin 2600`).
+
+The reason was that `dma_callback` **filled** a block from the ring and only
+then handed it to the hardware, so the AI was idle for the whole of the fill:
+512 frames of copy, plus a per-sample comparison under `GC_DEBUG`. The port had
+two DMA buffers and used them as one. It is a double buffer now -- the block
+latched is always the one filled during the *previous* callback, so the
+register write is the first thing the callback does and the fill has an entire
+block of slack. That is the discipline `ref-sm64gc`'s `audio_ogc.c` keeps with
+its queue of ready buffers.
+
+`ai cb late` stays in the heartbeat: it is the number that says whether this is
+finished, and it should read 0.
+
+**Not the reverb.** `dkr-nofx.dol` (`GC_AUDIO_FX=0`) crackled identically, so
+`A_POLEF` and the delay line are cleared. Nor the mixer's arithmetic, diffed
+against `ref-sm64gc` line by line the session before.
+
 ### Where this stands, end of 2026-09-04 — read this first
 
 **The state of the card.** What is physically on the SD card is `a0cb49d2`, a

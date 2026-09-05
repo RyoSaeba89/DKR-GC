@@ -205,45 +205,90 @@ static BOOL card_write_blob(s32 chn, const char *name, const void *buf, u32 size
 
 /* ---- the SD fallback ----------------------------------------------------- */
 
-static void sd_path(char *out, u32 outSize, const char *name) {
-    snprintf(out, outSize, "sd:/dkr/%s", name);
+/*
+ * Which volume the save file lives on.
+ *
+ * This used to be `sd:/dkr/<name>`, and that prefix does not exist on a
+ * GameCube: libfat names the front SD slot `sd:` on the Wii only, and an SD
+ * Gecko is `carda:` or `cardb:`. Every other path in the port -- the asset
+ * image, the log, the crash record -- tries the three in turn, and the log on
+ * the user's console resolves to `cardb:`. This one did not, so every
+ * `fopen` failed silently, `gc_storage_write` returned FALSE, and nothing was
+ * ever saved: no `dkr.eep` beside the log, and a game that forgets everything
+ * at the power switch.
+ *
+ * The volume the log found is the authority when there is one -- it is the
+ * card the game booted from -- and the three prefixes are tried otherwise.
+ */
+static const char *const kVolumes[] = { "sd:", "carda:", "cardb:" };
+
+static u32 storage_volume_paths(char paths[][64], u32 max, const char *name) {
+    const char *logPath = gc_logfile_path();
+    u32 n = 0;
+    u32 i;
+
+    if (logPath != NULL) {
+        const char *colon = strchr(logPath, ':');
+
+        if (colon != NULL && (u32) (colon - logPath) < 16 && n < max) {
+            snprintf(paths[n], 64, "%.*s:/dkr/%s", (int) (colon - logPath), logPath, name);
+            n++;
+        }
+    }
+    for (i = 0; i < sizeof(kVolumes) / sizeof(kVolumes[0]) && n < max; i++) {
+        snprintf(paths[n], 64, "%s/dkr/%s", kVolumes[i], name);
+        n++;
+    }
+    return n;
 }
 
 /* Both called with gc_fs_lock already held by the entry point above. */
 static BOOL sd_read_blob(const char *name, void *buf, u32 size) {
-    char path[64];
-    FILE *f;
-    size_t got;
+    char paths[4][64];
+    u32 n, i;
 
     if (!gc_fat_mount()) {
         return FALSE;
     }
-    sd_path(path, sizeof(path), name);
-    f = fopen(path, "rb");
-    if (f == NULL) {
-        return FALSE;
+    n = storage_volume_paths(paths, 4, name);
+    for (i = 0; i < n; i++) {
+        FILE *f = fopen(paths[i], "rb");
+        size_t got;
+
+        if (f == NULL) {
+            continue;
+        }
+        got = fread(buf, 1, size, f);
+        fclose(f);
+        if (got == size) {
+            return TRUE;
+        }
     }
-    got = fread(buf, 1, size, f);
-    fclose(f);
-    return got == size;
+    return FALSE;
 }
 
 static BOOL sd_write_blob(const char *name, const void *buf, u32 size) {
-    char path[64];
-    FILE *f;
-    size_t put;
+    char paths[4][64];
+    u32 n, i;
 
     if (!gc_fat_mount()) {
         return FALSE;
     }
-    sd_path(path, sizeof(path), name);
-    f = fopen(path, "wb");
-    if (f == NULL) {
-        return FALSE;
+    n = storage_volume_paths(paths, 4, name);
+    for (i = 0; i < n; i++) {
+        FILE *f = fopen(paths[i], "wb");
+        size_t put;
+
+        if (f == NULL) {
+            continue;
+        }
+        put = fwrite(buf, 1, size, f);
+        fclose(f);
+        if (put == size) {
+            return TRUE;
+        }
     }
-    put = fwrite(buf, 1, size, f);
-    fclose(f);
-    return put == size;
+    return FALSE;
 }
 
 /* ---- the interface ------------------------------------------------------- */

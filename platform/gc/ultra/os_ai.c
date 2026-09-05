@@ -302,83 +302,24 @@ u32 gGcAiOfferedFrames;
 u32 gGcAiGameRate;
 #endif
 
-static void dma_callback(void) {
-    u8 *buf = sDmaBuf[sDmaIndex];
+/*
+ * Fill one DMA block from the ring.
+ *
+ * Split out of the callback because *when* this runs is the whole point: it
+ * has to happen after the next block is already latched, not before. See
+ * dma_callback.
+ */
+static void fill_block(u8 *buf) {
     Frame *out = (Frame *) buf;
     u32 i;
 #ifdef GC_DEBUG
     u32 runHere = 0;
-    u32 usedAtEntry = ring_used();
-#endif
-
-#ifdef GC_DEBUG
-    gGcAiCallbacks++;
-    {
-        /* How long since the previous callback. One block is DMA_FRAMES /
-         * 48000 s; anything much past that means the previous block was
-         * replayed before this one could be latched. */
-        static u64 sPrevCb;
-        u64 now = gettime();
-
-        if (sPrevCb != 0) {
-            u32 us = (u32) ticks_to_microsecs(diff_ticks(sPrevCb, now));
-
-            if (us > gGcAiCbMaxUs) {
-                gGcAiCbMaxUs = us;
-            }
-            if (us > (DMA_FRAMES * 1000000u / OUTPUT_RATE_HZ) + 1500u) {
-                gGcAiCbLate++;
-            }
-        }
-        sPrevCb = now;
-    }
-
-    /*
-     * How close to empty the ring actually runs, and whether the silence comes
-     * in one lump or in scattered single frames.
-     *
-     * `under` alone said 130 to 265 silent frames per heartbeat -- 0.3 % of the
-     * output -- while `ring` said 2040 frames were buffered. Both cannot be
-     * describing the same instant, and a total cannot tell a burst from a
-     * sprinkle: 256 isolated zero frames are 256 clicks a second, one run of
-     * 256 is a single 5 ms dropout, and they need different fixes. So count the
-     * events, keep the longest run, and record the depth at the moment the
-     * consumer looks -- `ring` is sampled by the *producer*, after it has just
-     * filled the ring, which is the one moment it is guaranteed to look full.
-     */
-    if (usedAtEntry < gGcAiRingMin) {
-        gGcAiRingMin = usedAtEntry;
-    }
-    if (++sCbSincePush > gGcAiPushGapMax) {
-        gGcAiPushGapMax = sCbSincePush;
-    }
 #endif
 
     for (i = 0; i < DMA_FRAMES; i++) {
         if (sRingRead != sRingWrite) {
             out[i] = sRing[sRingRead];
 #ifdef GC_DEBUG
-            /*
-             * Steps in the waveform, counted on the way to the DAC.
-             *
-             * The run that produced this counter had **zero underruns from boot
-             * to the end** -- `under` never moved off its 3072 of initial fill
-             * -- and the music was still reported as crackling. Those two facts
-             * together say the crackle is not a delivery problem at all, and
-             * every audio counter so far has been about delivery.
-             *
-             * A click is a discontinuity: one sample far from the one before
-             * it. Music at 22 kHz moves smoothly between adjacent samples, so a
-             * jump of a third of full scale is not music -- it is a splice, a
-             * bad loop point, an envelope applied to the wrong span, or a
-             * decoder restarting mid-block. This counts them at the last point
-             * the port controls, so it measures the sound that actually leaves
-             * the machine rather than any one stage's opinion of it.
-             *
-             * It cannot say *which* voice, but it turns "it crackles" into a
-             * number that a change can be tested against, which is the thing
-             * that has been missing.
-             */
             {
                 s32 d = (s32) out[i].l - (s32) sPrevL;
 
@@ -422,9 +363,86 @@ static void dma_callback(void) {
 #endif
 
     DCFlushRange(buf, DMA_BYTES);
-    AUDIO_InitDMA((u32) buf, DMA_BYTES);
+}
+
+/*
+ * The AI has finished a block. Latch the next one FIRST.
+ *
+ * This order is the fix for the crackle, and the measurement that named it is
+ * `ai cb late 8, longest 14260 us` against a 10666 us block: eight times a
+ * beat the callback was arriving later than a whole block, which means the AI
+ * had reached the end of its buffer with no next address in its registers and
+ * had nothing defined to play. Seven or eight such holes a second is exactly
+ * "ça grésille".
+ *
+ * The reason was the order here. The callback used to fill a block from the
+ * ring and only then hand it to the hardware, so the AI was left idle for the
+ * whole of the fill -- 512 frames of copy, plus a per-sample comparison under
+ * GC_DEBUG -- and the next block could not start until that finished. The
+ * buffer the AI plays next is now always one that was filled during the
+ * *previous* callback, so the register write is the first thing that happens
+ * and the fill has a whole block of slack to complete in.
+ *
+ * That is the ordinary double-buffer discipline for a DMA engine with a single
+ * "next" register pair, and it is what ref-sm64gc's audio_ogc.c does with its
+ * queue of ready buffers. The port had the two buffers and used them as one.
+ */
+static void dma_callback(void) {
+    u8 *next = sDmaBuf[sDmaIndex ^ 1]; /* filled by the previous callback */
+
+    AUDIO_InitDMA((u32) next, DMA_BYTES);
     AUDIO_StartDMA();
     sDmaIndex ^= 1;
+
+#ifdef GC_DEBUG
+    {
+    u32 usedAtEntry = ring_used();
+
+    gGcAiCallbacks++;
+    {
+        /* How long since the previous callback. One block is DMA_FRAMES /
+         * 48000 s; anything much past that means the previous block was
+         * replayed before this one could be latched. */
+        static u64 sPrevCb;
+        u64 now = gettime();
+
+        if (sPrevCb != 0) {
+            u32 us = (u32) ticks_to_microsecs(diff_ticks(sPrevCb, now));
+
+            if (us > gGcAiCbMaxUs) {
+                gGcAiCbMaxUs = us;
+            }
+            if (us > (DMA_FRAMES * 1000000u / OUTPUT_RATE_HZ) + 1500u) {
+                gGcAiCbLate++;
+            }
+        }
+        sPrevCb = now;
+    }
+
+    /*
+     * How close to empty the ring actually runs, and whether the silence comes
+     * in one lump or in scattered single frames.
+     *
+     * `under` alone said 130 to 265 silent frames per heartbeat -- 0.3 % of the
+     * output -- while `ring` said 2040 frames were buffered. Both cannot be
+     * describing the same instant, and a total cannot tell a burst from a
+     * sprinkle: 256 isolated zero frames are 256 clicks a second, one run of
+     * 256 is a single 5 ms dropout, and they need different fixes. So count the
+     * events, keep the longest run, and record the depth at the moment the
+     * consumer looks -- `ring` is sampled by the *producer*, after it has just
+     * filled the ring, which is the one moment it is guaranteed to look full.
+     */
+    if (usedAtEntry < gGcAiRingMin) {
+        gGcAiRingMin = usedAtEntry;
+    }
+    if (++sCbSincePush > gGcAiPushGapMax) {
+        gGcAiPushGapMax = sCbSincePush;
+    }
+    }
+#endif
+
+    /* And only now the work: the block after the one just latched. */
+    fill_block(sDmaBuf[sDmaIndex ^ 1]);
 }
 
 static void ai_start(void) {
@@ -442,7 +460,10 @@ static void ai_start(void) {
 
     AUDIO_InitDMA((u32) sDmaBuf[0], DMA_BYTES);
     AUDIO_StartDMA();
-    sDmaIndex = 1;
+    /* The index names the block the AI is playing, and the *other* one is
+     * always the one already filled and ready to be latched. Both are silence
+     * to begin with, which is the right first block anyway. */
+    sDmaIndex = 0;
 }
 
 /*
