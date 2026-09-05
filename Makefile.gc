@@ -123,6 +123,8 @@ GC_2DTEST ?= 0
 #   2  straight into the DMA block (the AI, its interrupt, the double buffer)
 #   3  as 2, and the game thread is never started, so there is no ARAM DMA, no
 #      GX and no other thread -- the AI alone against everything else.
+#   4  as 3, but the block is all zeros. Silence needs no interpretation: if
+#      this is audibly dirty the noise does not come from our buffer at all.
 # Never ship at anything but 0.
 GC_AUDIOTEST ?= 0
 

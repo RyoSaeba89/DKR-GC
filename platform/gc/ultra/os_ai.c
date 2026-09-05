@@ -402,7 +402,27 @@ static void fill_block(u8 *buf) {
     u32 runHere = 0;
 #endif
 
-#if GC_AUDIOTEST >= 2
+#if GC_AUDIOTEST >= 4
+    /*
+     * Silence, with the game not running: the most basic question left.
+     *
+     * Level 3 played a tone that is exact to -78 dB, with no ARAM, no GX, no
+     * EXI and no other thread, and it still came out dirty. Every explanation
+     * remaining divides in two, and an all-zero buffer separates them
+     * completely, because silence needs no interpretation: it is either silent
+     * or it is not.
+     *
+     * If this is audibly dirty, then what the DAC plays does not come from
+     * this buffer at all -- the noise is independent of our data, and the
+     * suspects are the DSP's own output being mixed in, the analogue path, or
+     * a DMA that is not reading where we think. If this is clean, then our
+     * bytes do reach the DAC faithfully and the fault is in how the tone is
+     * presented to it: the rate, the frame format, or the amplitude.
+     */
+    memset(buf, 0, DMA_BYTES);
+    DCFlushRange(buf, DMA_BYTES);
+    return;
+#elif GC_AUDIOTEST >= 2
     /* The ring and everything above it are bypassed: what reaches the DAC is
      * generated here, one block at a time, with continuous phase. At level 3
      * the game is not running at all, so this is the only thing the machine
