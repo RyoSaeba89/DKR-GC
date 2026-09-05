@@ -3157,6 +3157,61 @@ Clean means the AI path is sound and the interference comes from what the game
 does. Dirty means the defect is in the AI setup itself and nothing above it
 matters.
 
+### The crackle: one line too many in the DMA callback (2026-09-05, found)
+
+A recording of the level-3 tone settled it in one analysis, after the bisection
+had narrowed the search to the delivery.
+
+**The silence test came back clean and the tone did not.** That pair is the
+hinge: an all-zero block is silent, so nothing is being added to our data --
+no DSP output, no analogue noise, no DMA reading the wrong place. Whatever is
+wrong happens *to* the samples.
+
+**The spectrum names it exactly.** Against the recording of `dkr-sine3.dol`:
+
+```
+fundamental                 480.33 Hz     0.0 dB
+480.33 - 93.75 = 386.58     386.67 Hz    -8.2 dB
+480.33 + 93.75 = 574.08     574.33 Hz   -17.9 dB
+480.33 + 187.5 = 667.83     668.00 Hz   -17.2 dB
+480.33 - 187.5 = 292.83     292.67 Hz   -18.7 dB
+2 x 480 (true harmonic)     968.33 Hz   -40.4 dB
+3 x 480 (true harmonic)    1442.67 Hz   -42.0 dB
+```
+
+The tone's own harmonics are at -40 dB and below, so it is not distortion. The
+strong components are sidebands at the fundamental plus and minus multiples of
+**93.75 Hz, which is 48000 / 512 -- the DMA block rate exactly**. Folding the
+amplitude envelope on that period gives 53 % modulation. Something
+discontinuous was happening at every single block boundary, ninety-four times
+a second, which is precisely what "ça grésille" is.
+
+**The cause is `AUDIO_StartDMA` in the callback.** The AI DMA reloads its
+address and length registers by itself when a transfer completes, for as long
+as the enable bit stays set, and `AUDIO_InitDMA` preserves that bit -- its
+`rlwimi` into `0xCC005036` writes only the fifteen length bits. So calling
+`AUDIO_StartDMA` again does not start the next block; it rewrites the enable
+bit of an engine that is already running, restarts the transfer, and the seam
+is audible.
+
+The authority is libogc's own ASND mixer, disassembled rather than assumed:
+`ASND_Init` calls `AUDIO_StartDMA` **exactly once**, and `audio_dma_callback`
+calls `AUDIO_InitDMA` and nothing else. It also programs the next buffer as
+the first thing it does in the callback, which this port already did.
+
+So the fix is the removal of one line. `ref-sm64gc`'s backend has the same
+call, which is why reading it did not find this: its blocks are 41 ms instead
+of 10.7, so it pays the same seam a quarter as often, on music that masks it
+far better than a sine does.
+
+**What the bisection cost and what it bought.** Four builds and four listens
+-- tone in the ring, tone in the DMA block, tone with the game not running,
+and silence -- plus one recording. It cleared, in order: the mixer and every
+audio-ABI opcode, the ring and the rate loop, ARAM contention and the entire
+game side, and finally additive noise. What was left was small enough that a
+spectrum could name it outright. The one wasted step was the first tone, which
+was a 256-entry table at -31.5 dB and measured itself; see the section above.
+
 ### Where this stands, end of 2026-09-04 — read this first
 
 **The state of the card.** What is physically on the SD card is `a0cb49d2`, a

@@ -506,8 +506,37 @@ static void fill_block(u8 *buf) {
 static void dma_callback(void) {
     u8 *next = sDmaBuf[sDmaIndex ^ 1]; /* filled by the previous callback */
 
+    /*
+     * Point the engine at the next block -- and do NOT start it.
+     *
+     * This one missing line was the crackle, and a recording named it. A
+     * bit-exact 480 Hz tone, played with the game not running at all, came
+     * back with sidebands at the fundamental +/- 93.75 Hz and multiples of it,
+     * the first only 8.2 dB below the carrier, while the true harmonics of the
+     * tone sat at -40 dB and below. 93.75 Hz is 48000 / 512: **the DMA block
+     * rate exactly**. So the tone was not distorted, it was modulated, once
+     * per block, by something discontinuous happening at every single
+     * boundary -- about half the amplitude, ninety-four times a second.
+     *
+     * The reason is that the AI DMA reloads its address and length registers
+     * by itself when a transfer completes, for as long as the enable bit stays
+     * set, and `AUDIO_InitDMA` deliberately preserves that bit (its `rlwimi`
+     * into 0xCC005036 writes only the fifteen length bits). Calling
+     * `AUDIO_StartDMA` again therefore does not "start the next block": it
+     * rewrites the enable bit on an engine that is already running and
+     * restarts the transfer, and the seam is audible.
+     *
+     * The authority for this is libogc's own ASND mixer, disassembled rather
+     * than guessed: `ASND_Init` calls `AUDIO_StartDMA` exactly once, and
+     * `audio_dma_callback` calls `AUDIO_InitDMA` and nothing else, ever. It
+     * is also why ASND programs the next buffer as the very first thing it
+     * does in the callback, which this file now does too.
+     *
+     * (ref-sm64gc's backend calls StartDMA every block as this one did. Its
+     * blocks are 41 ms rather than 10.7, so it pays the same seam a quarter as
+     * often, on music that masks it far better than a sine does.)
+     */
     AUDIO_InitDMA((u32) next, DMA_BYTES);
-    AUDIO_StartDMA();
     sDmaIndex ^= 1;
 
 #ifdef GC_DEBUG
@@ -573,12 +602,18 @@ static void ai_start(void) {
 #endif
 
     AUDIO_Init(NULL);
+    /* Stop before configuring, so the rate and the first address are written
+     * to an engine that is known to be idle. ASND_Init does the same. */
+    AUDIO_StopDMA();
     AUDIO_SetDSPSampleRate(AI_SAMPLERATE_48KHZ);
     AUDIO_RegisterDMACallback(dma_callback);
 
     memset(sDmaBuf, 0, sizeof(sDmaBuf));
     DCFlushRange(sDmaBuf, sizeof(sDmaBuf));
 
+    /* The only AUDIO_StartDMA in the port. From here the engine runs
+     * continuously and the callback only ever re-points it: see the note
+     * in dma_callback. */
     AUDIO_InitDMA((u32) sDmaBuf[0], DMA_BYTES);
     AUDIO_StartDMA();
     /* The index names the block the AI is playing, and the *other* one is
