@@ -637,7 +637,7 @@ int main(void) {
     open_assets();
     boot_step("assets ok");
 
-#if GC_AUDIOTEST >= 3
+#if GC_AUDIOTEST == 3 || GC_AUDIOTEST == 4
     /*
      * The audio, and nothing else at all.
      *

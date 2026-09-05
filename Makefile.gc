@@ -125,6 +125,10 @@ GC_2DTEST ?= 0
 #      GX and no other thread -- the AI alone against everything else.
 #   4  as 3, but the block is all zeros. Silence needs no interpretation: if
 #      this is audibly dirty the noise does not come from our buffer at all.
+#   5  a 441 Hz tone (22050 / 50 exactly) written over the game's samples at
+#      the *input* of the resampler, game running and every timing untouched.
+#      Asks whether the resampler, the rate loop and the ring damage a signal
+#      that is known to be clean.
 # Never ship at anything but 0.
 GC_AUDIOTEST ?= 0
 

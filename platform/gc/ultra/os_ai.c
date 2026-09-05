@@ -290,6 +290,44 @@ static void test_tone(Frame *out, u32 frames) {
         }
     }
 }
+
+/*
+ * The same idea at the *game's* rate, for level 5.
+ *
+ * 22050 / 441 is exactly 50, so a 441 Hz tone is fifty samples per cycle with
+ * no remainder and the table is again replayed verbatim. Written over the
+ * game's own samples just after they are copied into the resampler's work
+ * buffer, so the resampler, the rate loop, the ring and the DMA all run on
+ * their real timings -- the number of frames per push, the cadence, the ring
+ * depth -- but on a signal whose correctness is not in question.
+ */
+#define TEST_CYCLE_G 50 /* samples per cycle: 22050 / 441 exactly */
+
+static s16 sTestTableG[TEST_CYCLE_G];
+static u32 sTestPosG;
+
+static void test_tone_game_init(void) {
+    u32 i;
+
+    for (i = 0; i < TEST_CYCLE_G; i++) {
+        sTestTableG[i] =
+            (s16) (8000.0f * sinf(2.0f * 3.14159265358979f * (f32) i / (f32) TEST_CYCLE_G));
+    }
+}
+
+static void test_tone_game(Frame *out, u32 frames) {
+    u32 i;
+
+    for (i = 0; i < frames; i++) {
+        s16 v = sTestTableG[sTestPosG];
+
+        out[i].l = v;
+        out[i].r = v;
+        if (++sTestPosG >= TEST_CYCLE_G) {
+            sTestPosG = 0;
+        }
+    }
+}
 #endif
 
 static s16 clamp_s16(f32 v) {
@@ -432,7 +470,7 @@ static void fill_block(u8 *buf) {
     u32 runHere = 0;
 #endif
 
-#if GC_AUDIOTEST >= 4
+#if GC_AUDIOTEST == 4
     /*
      * Silence, with the game not running: the most basic question left.
      *
@@ -452,7 +490,7 @@ static void fill_block(u8 *buf) {
     memset(buf, 0, DMA_BYTES);
     DCFlushRange(buf, DMA_BYTES);
     return;
-#elif GC_AUDIOTEST >= 2
+#elif GC_AUDIOTEST == 2 || GC_AUDIOTEST == 3
     /* The ring and everything above it are bypassed: what reaches the DAC is
      * generated here, one block at a time, with continuous phase. At level 3
      * the game is not running at all, so this is the only thing the machine
@@ -635,6 +673,7 @@ static void ai_start(void) {
 #if GC_AUDIOTEST
     /* On a thread, before the first interrupt: see the note on test_tone. */
     test_tone_init();
+    test_tone_game_init();
 #endif
 
     AUDIO_Init(NULL);
@@ -871,6 +910,12 @@ s32 osAiSetNextBuffer(void *buf, u32 len) {
         inFrames = RS_WORK_FRAMES - RS_TAPS;
     }
     memcpy(&sWork[RS_TAPS], in, inFrames * sizeof(Frame));
+#if GC_AUDIOTEST == 5
+    /* Over the game's samples, leaving every timing exactly as it was: this
+     * asks whether the resampler, the rate loop and the ring damage a signal
+     * that is known to be clean. */
+    test_tone_game(&sWork[RS_TAPS], inFrames);
+#endif
 
     while ((pos >> 16) + RS_HALF < RS_TAPS + inFrames && ring_free() > 0) {
         u32 i = pos >> 16;
