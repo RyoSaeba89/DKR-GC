@@ -402,9 +402,11 @@ static void fill_block(u8 *buf) {
     u32 runHere = 0;
 #endif
 
-#if GC_AUDIOTEST == 2
+#if GC_AUDIOTEST >= 2
     /* The ring and everything above it are bypassed: what reaches the DAC is
-     * generated here, one block at a time, with continuous phase. */
+     * generated here, one block at a time, with continuous phase. At level 3
+     * the game is not running at all, so this is the only thing the machine
+     * is doing. */
     test_tone(out, DMA_FRAMES);
     DCFlushRange(buf, DMA_BYTES);
     return;

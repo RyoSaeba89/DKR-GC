@@ -3100,6 +3100,63 @@ The bisection is unchanged and still to be run:
 | `dkr-sine1.dol` | into the ring, in place of the resampler's output | the rate loop, the ring, the DMA |
 | `dkr-sine2.dol` | straight into the DMA block | the AI, its interrupt, the double buffer |
 
+### The samples are right, they are consumed on time, and it is still dirty (2026-09-05, latest)
+
+With the tone corrected to -78 dB, both levels are dirty again -- and this
+time the result stands. `dkr-sine2.dol` bypasses the ring, the rate loop, the
+resampler, the mixer and the whole game, so **the defect is in the delivery**,
+and the mixer, the resampler and every audio-ABI opcode are cleared outright.
+
+Three things were then established without a hardware run.
+
+**The AI never stalls.** Pairing each heartbeat's elapsed milliseconds with
+the DMA callback count says how much audio was actually played against how
+much time passed:
+
+```
+ 1200 ms   113 blocks  =  1205.3 ms of audio  (  +5.3)
+ 1199 ms   112 blocks  =  1194.7 ms of audio  (  -4.3)
+ 1239 ms   117 blocks  =  1248.0 ms of audio  (  +9.0)
+```
+
+Every steady-state beat agrees to within one block of 10.7 ms, which is the
+quantisation of the count itself. So the engine consumes 48 000 frames a
+second continuously, there are no holes, and `ai cb late` is confirmed as
+interrupt jitter with no audible consequence. That closes the line of enquiry
+the double-buffer commit opened.
+
+**libogc drives the hardware the way it should**, read off the disassembly
+rather than assumed. `AUDIO_InitDMA` writes the address into `0xCC005030`/
+`0x5032` and the length into `0xCC005036` as `len >> 5`, 32-byte units in
+fifteen bits, with an `rlwimi` that **preserves bit 15**; `AUDIO_StartDMA`
+sets exactly that bit. Address and length are latched separately from the
+enable, which is the correct ordering, and `AUDIO_InitDMA` brackets the writes
+with `MSR[EE]` cleared. Nothing there is wrong, and it is what
+`ref-sm64gc/src/pc/audio/audio_ogc.c` does too.
+
+**The DSP is not the difference.** Neither this port nor the reference calls
+`DSP_Init`; `AUDIO_Init` configures the AI control and volume registers at
+`0xCC006C00` and leaves the DSP alone. Both are in the same state.
+
+So: correct samples, correct registers, no stalls -- and dirt. What is left is
+either the AI's own setup (the 48 kHz rate, the 2048-byte block) or
+**something else in the machine interfering with a DMA that is otherwise
+correct**. And there is one structural difference between this port and the
+reference that has been sitting in plain sight: **this port drives the ARAM
+DMA constantly and the reference never touches ARAM at all.** The asset image
+lives there, `__amDMA` pulls sample data through it up to fifty times per
+audio frame, and the ARAM engine and the AI DMA are two clients of the same
+DSP interface and the same memory bus. Contention there would starve the DAC
+without moving a single software counter, because the block clock is the
+sample clock and never changes -- which is exactly the shape of everything
+measured above.
+
+`GC_AUDIOTEST=3` separates the two: the tone plays and **the game thread is
+never started**, so there is no ARAM DMA, no GX, no EXI and no other thread.
+Clean means the AI path is sound and the interference comes from what the game
+does. Dirty means the defect is in the AI setup itself and nothing above it
+matters.
+
 ### Where this stands, end of 2026-09-04 — read this first
 
 **The state of the card.** What is physically on the SD card is `a0cb49d2`, a

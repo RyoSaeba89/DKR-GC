@@ -637,6 +637,38 @@ int main(void) {
     open_assets();
     boot_step("assets ok");
 
+#if GC_AUDIOTEST >= 3
+    /*
+     * The audio, and nothing else at all.
+     *
+     * Levels 1 and 2 both come out dirty with a tone that is exact to -78 dB,
+     * and the log proves the AI never stalls: every beat plays exactly the
+     * elapsed time to within one block. So the samples are right and they are
+     * consumed on schedule, and yet the sound is not clean -- which leaves
+     * either the AI's own setup, or something else in the machine interfering
+     * with a DMA that is otherwise correct.
+     *
+     * This level separates those two. The game thread is never started, so
+     * there is no ARAM DMA, no GX, no EXI, no display list and no other
+     * thread; the only activity is the AI interrupt filling a block with a
+     * sine. Clean here means the AI path is sound and the interference comes
+     * from what the game does -- and the ARAM engine is the first suspect,
+     * because it is the one thing this port uses heavily that the reference
+     * port on this same library does not use at all. Dirty here means the
+     * defect is in the AI setup itself and nothing above it matters.
+     *
+     * osAiSetFrequency is what normally starts the engine, and the game is
+     * what normally calls it, so it is called here instead.
+     */
+    boot_step("AUDIOTEST 3: tone only, game not started");
+    osAiSetFrequency(22050);
+    gc_logfile_flush();
+    for (;;) {
+        VIDEO_WaitVSync();
+        gc_logfile_flush();
+    }
+#endif
+
     /* thread3_main is the game: it sets up the scheduler, the subsystems and
      * then never returns. It is given a thread of its own rather than being
      * called directly because the scheduler it creates has to be able to

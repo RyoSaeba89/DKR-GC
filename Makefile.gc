@@ -115,12 +115,15 @@ GC_PROJ_TINT ?= 0
 # both = the game's own state. Never ship this at 1.
 GC_2DTEST ?= 0
 
-# GC_AUDIOTEST: replace the game's audio with a 440 Hz sine, to find out which
-# half of the audio pipeline the crackle lives in. 1 writes it into the ring in
-# place of the resampler's output (the rate loop, the ring and the DMA all
-# still run); 2 writes it straight into the DMA block (only the AI, its
-# interrupt and the double buffer are left). A sine needs no counter to judge.
-# Never ship either at anything but 0.
+# GC_AUDIOTEST: replace the game's audio with a 480 Hz sine -- exactly 100
+# samples per cycle at 48 kHz, so the tone is bit-exact and cannot itself be
+# the artefact (the first version of this test used a 256-entry table and was
+# -31.5 dB of distortion, which invalidated a whole run). Levels:
+#   1  into the ring, in place of the resampler's output (rate loop, ring, DMA)
+#   2  straight into the DMA block (the AI, its interrupt, the double buffer)
+#   3  as 2, and the game thread is never started, so there is no ARAM DMA, no
+#      GX and no other thread -- the AI alone against everything else.
+# Never ship at anything but 0.
 GC_AUDIOTEST ?= 0
 
 # GC_TEXEL1: bind tile 1 as a second GX texture so the combiner's TEXEL1 reads
