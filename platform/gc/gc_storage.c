@@ -332,6 +332,39 @@ static BOOL sd_write_blob(const char *name, const void *buf, u32 size) {
     return FALSE;
 }
 
+/*
+ * Write a blob of any size straight to a filesystem, bypassing the memory
+ * card and the 32 KB cap.
+ *
+ * Only for diagnostics that have to leave the console: a slice of the game's
+ * own audio output, so it can be analysed off the machine the way a recording
+ * of the television was. Uses the same volume enumeration as everything else,
+ * so it lands wherever the log did.
+ */
+BOOL gc_storage_write_raw(const char *name, const void *buf, u32 size) {
+    char paths[STORAGE_MAX_PATHS][64];
+    u32 n, i;
+    BOOL ok = FALSE;
+
+    gc_fs_lock();
+    if (gc_fat_mount()) {
+        n = storage_volume_paths(paths, STORAGE_MAX_PATHS, name);
+        for (i = 0; i < n && !ok; i++) {
+            FILE *f;
+
+            ensure_dir(paths[i]);
+            f = fopen(paths[i], "wb");
+            if (f == NULL) {
+                continue;
+            }
+            ok = fwrite(buf, 1, size, f) == size;
+            fclose(f);
+        }
+    }
+    gc_fs_unlock();
+    return ok;
+}
+
 /* ---- the interface ------------------------------------------------------- */
 
 /*

@@ -242,6 +242,21 @@ static void gc_heartbeat(u32 ticks) {
     gGcAudStepAdpcmJoin = gGcAudStepAdpcmIn = 0;
     gGcAudStepResampJoin = gGcAudStepResampIn = 0;
     gGcAudStepEnvJoin = gGcAudStepEnvIn = 0;
+    /* Lane 0 of every eight-sample vector, per stage. 100 is a clean
+     * buffer; the captured output sits near 1000 on the left. */
+    {
+        static const char *const names[7] = { "mainL", "mainR", "envin", "envL",
+                                              "envR", "rsout", "adout" };
+        int i;
+        gc_log("\n           aud lane0:");
+        for (i = 0; i < 7; i++) {
+            unsigned pct = gGcAudLaneN[i] ? (unsigned) ((u64) gGcAudLane0[i] * 100u /
+                                                        gGcAudLaneN[i]) : 0;
+
+            gc_log(" %s %u%%%s", names[i], pct, i == 6 ? "" : " |");
+            gGcAudLane0[i] = gGcAudLaneN[i] = gGcAudLaneCount[i] = 0;
+        }
+    }
     gGcAiUnderEvents = 0;
     gGcAiUnderMax = 0;
     gGcAiRingMin = 0xFFFFFFFFu;

@@ -330,6 +330,183 @@ static void test_tone_game(Frame *out, u32 frames) {
 }
 #endif
 
+/*
+ * GC_AUDIODUMP: write one second of the game's own mixed output to the card.
+ *
+ * The bisection has cleared everything below this point -- a pure tone is
+ * clean through the DMA, through the ring, and through the resampler with the
+ * game running and every timing real -- so whatever is left is in the samples
+ * the game's mixer hands over. Counters cannot describe those; the waveform
+ * can, and this port has twice been unblocked by taking the data off the
+ * machine and looking at it (the texture dumps, and the recording that named
+ * the block rate).
+ *
+ * So: capture the buffer exactly as it arrives at osAiSetNextBuffer, before
+ * any resampling, and write it once as raw stereo 16-bit at the game's rate.
+ *
+ * The capture must contain the defect, and that is the whole difficulty. It is
+ * content-dependent -- `ai steps` reads 250 to 1500 a second in a race and
+ * exactly 0 in the menus -- so a capture armed on a timer would almost
+ * certainly record the title screen and prove nothing, at the cost of a
+ * hardware run. This one therefore arms on the phenomenon: it records
+ * continuously into a circular buffer and freezes half a second after the
+ * first discontinuity in the game's own samples, so the glitch lands near the
+ * middle of the file with context on both sides.
+ *
+ * The threshold is the one `ai steps` uses, scaled for the game's rate: at
+ * 22 kHz adjacent samples of real music are about twice as far apart as they
+ * are after resampling to 48 kHz. Every detection is logged with its offset
+ * and its size, so the offline analysis can judge the threshold rather than
+ * trust it.
+ *
+ * A timeout writes the file anyway if nothing ever trips, because a run that
+ * produces no file at all cannot even tell us that the input was clean.
+ */
+#ifndef GC_AUDIODUMP
+#define GC_AUDIODUMP 0
+#endif
+
+#if GC_AUDIODUMP
+#define DUMP_FRAMES 22050  /* one second at the game's rate */
+#define DUMP_WARMUP 100    /* ~4 s: do not arm on the boot's first sounds */
+#define DUMP_TIMEOUT 3000  /* ~2 min: write something even if nothing trips */
+#define DUMP_TAIL (DUMP_FRAMES / 2) /* keep recording this long after arming */
+#define DUMP_STEP 14000    /* AUDIO_STEP_THRESHOLD, scaled for 22 kHz */
+#define DUMP_MARKS 64
+
+static Frame sDump[DUMP_FRAMES];
+static u32 sDumpPos;   /* write cursor, wraps */
+static u32 sDumpFill;  /* frames written, saturates at DUMP_FRAMES */
+static u32 sDumpPushes;
+static BOOL sDumpArmed;
+static BOOL sDumpDone;
+static u32 sDumpTail;  /* frames still to record after arming */
+static s16 sDumpPrevL, sDumpPrevR;
+static BOOL sDumpHavePrev;
+
+/* Where each push started, and where each discontinuity was seen: both as
+ * circular indices, converted to file offsets when the buffer is frozen. A
+ * glitch that sits on a push boundary means state carried across audio frames;
+ * one that does not means a single voice. */
+static u32 sDumpMark[DUMP_MARKS];
+static u32 sDumpMarks;
+static u32 sDumpGlitch[DUMP_MARKS];
+static u32 sDumpGlitchSize[DUMP_MARKS];
+static u32 sDumpGlitches;
+
+/* Left-rotate by three reversals, so the oldest frame ends up first without a
+ * second 88 KB buffer. */
+static void dump_reverse(u32 a, u32 b) {
+    while (a < b) {
+        Frame t = sDump[a];
+
+        sDump[a++] = sDump[b];
+        sDump[b--] = t;
+    }
+}
+
+static void dump_flush(const char *why) {
+    u32 n = sDumpFill;
+    u32 first = (n == DUMP_FRAMES) ? sDumpPos : 0; /* oldest frame */
+    u32 i;
+
+    sDumpDone = TRUE;
+
+    if (first != 0 && n > 1) {
+        dump_reverse(0, first - 1);
+        dump_reverse(first, n - 1);
+        dump_reverse(0, n - 1);
+    }
+
+    if (gc_storage_write_raw("dkr.pcm", sDump, n * sizeof(Frame))) {
+        gc_logfile_mark("audiodump: %s -- wrote dkr.pcm, %lu frames, stereo s16 at %lu Hz\n", why,
+                        (unsigned long) n, (unsigned long) sGameRate);
+    } else {
+        gc_logfile_mark("audiodump: %s -- could not write dkr.pcm\n", why);
+    }
+
+    for (i = 0; i < sDumpMarks; i++) {
+        u32 at = (sDumpMark[i] + DUMP_FRAMES - first) % DUMP_FRAMES;
+
+        if (at < n) {
+            gc_logfile_printf("audiodump: push boundary at frame %lu\n", (unsigned long) at);
+        }
+    }
+    for (i = 0; i < sDumpGlitches; i++) {
+        u32 at = (sDumpGlitch[i] + DUMP_FRAMES - first) % DUMP_FRAMES;
+
+        if (at < n) {
+            gc_logfile_printf("audiodump: step at frame %lu, %lu counts\n", (unsigned long) at,
+                              (unsigned long) sDumpGlitchSize[i]);
+        }
+    }
+}
+
+static void dump_capture(const Frame *in, u32 frames) {
+    u32 i;
+
+    if (sDumpDone) {
+        return;
+    }
+    if (++sDumpPushes < DUMP_WARMUP) {
+        return;
+    }
+    if (sDumpMarks < DUMP_MARKS) {
+        sDumpMark[sDumpMarks++] = sDumpPos;
+    } else {
+        /* Keep the most recent ones: the oldest have been overwritten anyway. */
+        memmove(&sDumpMark[0], &sDumpMark[1], (DUMP_MARKS - 1) * sizeof(sDumpMark[0]));
+        sDumpMark[DUMP_MARKS - 1] = sDumpPos;
+    }
+
+    for (i = 0; i < frames; i++) {
+        if (sDumpHavePrev) {
+            s32 dl = (s32) in[i].l - (s32) sDumpPrevL;
+            s32 dr = (s32) in[i].r - (s32) sDumpPrevR;
+            s32 d;
+
+            if (dl < 0) {
+                dl = -dl;
+            }
+            if (dr < 0) {
+                dr = -dr;
+            }
+            d = (dl > dr) ? dl : dr;
+
+            if (d > DUMP_STEP) {
+                if (sDumpGlitches < DUMP_MARKS) {
+                    sDumpGlitch[sDumpGlitches] = sDumpPos;
+                    sDumpGlitchSize[sDumpGlitches] = (u32) d;
+                    sDumpGlitches++;
+                }
+                if (!sDumpArmed) {
+                    sDumpArmed = TRUE;
+                    sDumpTail = DUMP_TAIL;
+                }
+            }
+        }
+        sDumpPrevL = in[i].l;
+        sDumpPrevR = in[i].r;
+        sDumpHavePrev = TRUE;
+
+        sDump[sDumpPos] = in[i];
+        sDumpPos = (sDumpPos + 1) % DUMP_FRAMES;
+        if (sDumpFill < DUMP_FRAMES) {
+            sDumpFill++;
+        }
+
+        if (sDumpArmed && sDumpTail-- == 0) {
+            dump_flush("armed by a step in the game's samples");
+            return;
+        }
+    }
+
+    if (sDumpPushes >= DUMP_TIMEOUT) {
+        dump_flush("timed out, no step ever seen");
+    }
+}
+#endif
+
 static s16 clamp_s16(f32 v) {
     if (v > 32767.0f) {
         return 32767;
@@ -789,6 +966,12 @@ s32 osAiSetNextBuffer(void *buf, u32 len) {
         return 0;
     }
     ai_start();
+
+#if GC_AUDIODUMP
+    /* Exactly what the game handed over, before anything in this file touches
+     * it. See the note on GC_AUDIODUMP. */
+    dump_capture(in, inFrames);
+#endif
 
     if (inFrames > sLastBufferGameSamples) {
         sLastBufferGameSamples = inFrames;

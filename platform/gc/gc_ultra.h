@@ -61,6 +61,10 @@ void gc_fs_unlock(void);
 BOOL gc_storage_read(const char *name, void *buf, u32 size);
 BOOL gc_storage_write(const char *name, const void *buf, u32 size);
 
+/* Any size, filesystem only, no memory card. For diagnostics that have to be
+ * analysed off the console -- see GC_AUDIODUMP in ultra/os_ai.c. */
+BOOL gc_storage_write_raw(const char *name, const void *buf, u32 size);
+
 /* Whether there is anywhere at all to save. osPfsIsPlug answers the game's
  * "is a Controller Pak plugged in" with this. */
 BOOL gc_storage_present(void);
@@ -260,6 +264,39 @@ extern u32 gGcAudioSamples, gGcAudioClipped;
 extern u32 gGcAudStepAdpcmJoin, gGcAudStepAdpcmIn;
 extern u32 gGcAudStepResampJoin, gGcAudStepResampIn;
 extern u32 gGcAudStepEnvJoin, gGcAudStepEnvIn;
+
+/* The lane-0 probe.
+ *
+ * The 2026-09-06 capture of the game's own output settled the shape of the
+ * crackle offline: in the LEFT channel, and only there, every sample whose
+ * index is a multiple of eight is wrong -- all of them, not just the audible
+ * ones -- while lanes 1..7 and the whole right channel are clean. Eight
+ * samples is sixteen bytes, one RSP vector, so the fault is in a stage that
+ * works a vector at a time, at or below the envelope mixer.
+ *
+ * The metric is the mean |x[i-1] - 2x[i] + x[i+1]| over the samples at
+ * i % 8 == 0, against the same average at i % 8 == 4. Real audio is smooth,
+ * so both are equal on a clean buffer and the ratio is 1; on the captured
+ * output the ratio is about ten. Each probe is one point in the chain, so
+ * the first probe whose ratio leaves 1 names the stage:
+ *
+ * The 2026-09-06 run answered the first question: `mixL` (MAIN_L before the
+ * reverb's aux is mixed in) was already dirty, up to 832 %, while `auxL`
+ * stayed near 100 %. So the reverb is cleared and the fault is at or above
+ * the envelope mixer's dry-left write. The probes now walk that half of the
+ * chain instead:
+ *
+ *   mainL/mainR  the finished mix, at the interleave
+ *   envin        what the envelope mixer is handed, per voice
+ *   envL/envR    its two dry outputs, immediately after it runs
+ *   rsout        the resampler's output, immediately after it runs
+ *   adout        the ADPCM decoder's output, immediately after it runs
+ *
+ * The lowest stage that is already dirty is the one to read.
+ *
+ * Reported as a percentage, so 100 is clean and 1000 is the defect.
+ */
+extern u32 gGcAudLane0[7], gGcAudLaneN[7], gGcAudLaneCount[7];
 
 /* One level up from the mixer: libultra's own synthesiser, in
  * libultra/src/audio. `syn` counts alAudioFrame calls, how many turned back

@@ -401,7 +401,6 @@ static void a_env_mixer(u8 flags, s16 *state) {
     s16 target[2];
     s32 rate[2];
     s16 vol_dry, vol_wet;
-    s32 step_diff[2];
     s32 vols[2][8];
     int c, i;
 
@@ -414,26 +413,16 @@ static void a_env_mixer(u8 flags, s16 *state) {
         vol_wet = sRspa.vol_wet;
 
         /*
-         * Both slopes are derived from vol[0], and that is not a typo being
-         * copied blindly -- it is the reference being trusted over a tidier
-         * reading.
-         *
-         * This port first "corrected" the second line to vol[1], on the
-         * argument that pairing a left-derived slope with a right-derived base
-         * could not be what the microcode does. That argument was reasoning,
-         * not measurement, against an implementation that has been checked
-         * against real hardware output for years. The rule for this file is
-         * that it transcribes sm64-port's scalar path; where it wants to
-         * disagree, it needs a measurement first, and there was none.
+         * The eight lanes are the ramp inside one vector: lane i carries the
+         * volume the (i+1)th sample of each group of eight is multiplied by,
+         * and every group advances the whole ramp by one `rate`. See the note
+         * on the loop below for why that is an addition and not a scaling.
          */
-        step_diff[0] = sRspa.vol[0] * (rate[0] - 0x10000) / 8;
-        step_diff[1] = sRspa.vol[0] * (rate[1] - 0x10000) / 8;
-
         for (i = 0; i < 8; i++) {
             vols[0][i] = clamp32((s64) ((s32) sRspa.vol[0] << 16) +
-                                 (s64) step_diff[0] * (i + 1));
+                                 (s64) rate[0] * (i + 1) / 8);
             vols[1][i] = clamp32((s64) ((s32) sRspa.vol[1] << 16) +
-                                 (s64) step_diff[1] * (i + 1));
+                                 (s64) rate[1] * (i + 1) / 8);
         }
     } else {
         memcpy(vols[0], state, 32);
@@ -446,10 +435,48 @@ static void a_env_mixer(u8 flags, s16 *state) {
         vol_wet = state[39];
     }
 
+    /*
+     * `rate` is an INCREMENT, not a multiplier, and getting that wrong was the
+     * crackle.
+     *
+     * This function was transcribed from sm64-port's scalar `aEnvMixerImpl`,
+     * where the envelope is exponential: the lanes are seeded with
+     * `vol * (1 + (rate - 1) * (i + 1) / 8)` and each group of eight scales
+     * them by `rate`. That is right for SM64's audio ABI and wrong for this
+     * one, and the proof is in this repository rather than in any reasoning
+     * about microcode. `libultra/src/audio/env.c` computes the value it hands
+     * over as
+     *
+     *     a = (tgt - vol) / count; a *= 8;          -- _getRate
+     *
+     * a volume *difference* per eight samples, and then keeps its own copy of
+     * the envelope in step with the RSP as
+     *
+     *     r = ((ratem << 16) + ratel) / 65536.0;
+     *     ivol += (r * samples) / 8.0;             -- _getVol
+     *
+     * which is an addition. So the game's model of what the microcode does is
+     * additive, and it is the authority here.
+     *
+     * Read multiplicatively, a perfectly ordinary DKR rate -- a segment of one
+     * second gives `a` around 12, i.e. rate ~= 0xBE666 -- scaled every lane by
+     * twelve within a single group of eight and then let the target clamp pin
+     * it, so the gain sawtoothed once per eight samples and reset. That is
+     * exactly the defect the 2026-09-06 capture measured: in the left channel,
+     * every sample at a multiple of eight wrong, the error uncorrelated with
+     * the signal and larger than it. `vol[0] * (rate - 0x10000)` also
+     * overflowed a signed 32-bit multiply at those rates, which flipped the
+     * ramp's sign on top of it.
+     *
+     * Also note the test below: with an increment, "rising" is `rate > 0` as a
+     * signed 16.16 value. The old `(rate >> 16) > 0` called every rate smaller
+     * than 1.0 -- every gentle fade IN -- a fade out, and clamped it to the
+     * target from the wrong side.
+     */
     do {
         for (c = 0; c < 2; c++) {
             for (i = 0; i < 8; i++) {
-                if ((rate[c] >> 16) > 0) {
+                if (rate[c] > 0) {
                     /* Rising towards the target: never overshoot it. */
                     if ((vols[c][i] >> 16) > target[c]) {
                         vols[c][i] = (s32) target[c] << 16;
@@ -468,7 +495,7 @@ static void a_env_mixer(u8 flags, s16 *state) {
                                          in[i] * (((vols[c][i] >> 16) * vol_wet + 0x4000) >> 15) +
                                          0x4000) >> 15);
                 }
-                vols[c][i] = clamp32((s64) vols[c][i] * rate[c] >> 16);
+                vols[c][i] = clamp32((s64) vols[c][i] + rate[c]);
             }
             dry[c] += 8;
             if (flags & A_AUX) {
@@ -710,6 +737,27 @@ static void note_steps(int stage, const void *key, const s16 *samples, int n, BO
     }
 }
 
+u32 gGcAudLane0[7], gGcAudLaneN[7], gGcAudLaneCount[7];
+
+/*
+ * Curvature of a mono buffer at lane 0 of each eight-sample vector, against
+ * lane 4 of the same vector. See the note in gc_ultra.h: the captured output
+ * has every eighth left sample wrong, so this asks each stage in turn whether
+ * the buffer it is holding already has that shape.
+ */
+static void note_lane0(int probe, const s16 *b, int n) {
+    int i;
+
+    for (i = 8; i + 8 < n; i += 8) {
+        s32 c0 = (s32) b[i - 1] - 2 * (s32) b[i] + (s32) b[i + 1];
+        s32 c4 = (s32) b[i + 3] - 2 * (s32) b[i + 4] + (s32) b[i + 5];
+
+        gGcAudLane0[probe] += (u32) (c0 < 0 ? -c0 : c0);
+        gGcAudLaneN[probe] += (u32) (c4 < 0 ? -c4 : c4);
+        gGcAudLaneCount[probe]++;
+    }
+}
+
 #define GC_AUDIO_IGNORE(op) (gGcAudioIgnored[op]++)
 
 /*
@@ -749,6 +797,7 @@ static void note_saved(const s16 *samples, int nbytes) {
 #define GC_AUDIO_IGNORE(op)          ((void) 0)
 #define note_saved(samples, nbytes)  ((void) 0)
 #define note_steps(stage, key, samples, n, init, join, inside) ((void) 0)
+#define note_lane0(probe, b, n)      ((void) 0)
 #endif
 
 /* ---- the walker ---------------------------------------------------------- */
@@ -809,6 +858,8 @@ void gc_audio_run_cmds(const void *cmdList, unsigned int sizeBytes) {
                            ROUND_UP_32(sRspa.nbytes) / (int) sizeof(s16),
                            ((w0 >> 16) & (A_INIT | A_LOOP)) != 0,
                            &gGcAudStepAdpcmJoin, &gGcAudStepAdpcmIn);
+                note_lane0(6, DMEM_S16(sRspa.out) + 16,
+                           ROUND_UP_32(sRspa.nbytes) / (int) sizeof(s16));
 #endif
                 break;
 
@@ -824,7 +875,19 @@ void gc_audio_run_cmds(const void *cmdList, unsigned int sizeBytes) {
                            ROUND_UP_16(sRspa.nbytes) / (int) sizeof(s16),
                            ((w0 >> 16) & A_INIT) != 0, &gGcAudStepEnvJoin, &gGcAudStepEnvIn);
 #endif
+#ifdef GC_DEBUG
+                /* One voice's worth, either side of the envelope mixer: what
+                 * it is handed, and the two buffers it accumulates into. */
+                note_lane0(2, DMEM_S16(sRspa.in),
+                           ROUND_UP_16(sRspa.nbytes) / (int) sizeof(s16));
+#endif
                 a_env_mixer((u8) (w0 >> 16), (s16 *) dram(w1));
+#ifdef GC_DEBUG
+                note_lane0(3, DMEM_S16(sRspa.out),
+                           ROUND_UP_16(sRspa.nbytes) / (int) sizeof(s16));
+                note_lane0(4, DMEM_S16(sRspa.dry_right),
+                           ROUND_UP_16(sRspa.nbytes) / (int) sizeof(s16));
+#endif
                 break;
 
             case A_LOADBUFF:
@@ -837,7 +900,8 @@ void gc_audio_run_cmds(const void *cmdList, unsigned int sizeBytes) {
                 note_steps(1, dram(w1), DMEM_S16(sRspa.out),
                            ROUND_UP_16(sRspa.nbytes) / (int) sizeof(s16),
                            ((w0 >> 16) & A_INIT) != 0, &gGcAudStepResampJoin,
-                           &gGcAudStepResampIn);
+                           &gGcAudStepResampIn);                note_lane0(5, DMEM_S16(sRspa.out),
+                           ROUND_UP_16(sRspa.nbytes) / (int) sizeof(s16));
 #endif
                 break;
 
@@ -883,6 +947,15 @@ void gc_audio_run_cmds(const void *cmdList, unsigned int sizeBytes) {
                 break;
 
             case A_INTERLEAVE:
+            #ifdef GC_DEBUG
+                /* The finished mix, one channel each, as the interleave sees
+                 * it. If mainL is dirty here and mixL below is not, the
+                 * interleave itself is at fault. */
+                note_lane0(0, DMEM_S16((u16) (w1 >> 16)),
+                           ROUND_UP_16(sRspa.nbytes) / (int) sizeof(s16));
+                note_lane0(1, DMEM_S16((u16) w1),
+                           ROUND_UP_16(sRspa.nbytes) / (int) sizeof(s16));
+#endif
                 a_interleave((u16) (w1 >> 16), (u16) w1);
                 break;
 

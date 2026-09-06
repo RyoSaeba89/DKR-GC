@@ -132,6 +132,13 @@ GC_2DTEST ?= 0
 # Never ship at anything but 0.
 GC_AUDIOTEST ?= 0
 
+# GC_AUDIODUMP: write one second of the game's own mixed output to dkr.pcm on
+# the card, raw stereo 16-bit at the game's rate, captured before the port
+# resamples it. Everything below the mixer has been cleared by GC_AUDIOTEST, so
+# this is the data the remaining defect lives in, and it can be analysed off
+# the console. Never ship at 1.
+GC_AUDIODUMP ?= 0
+
 # GC_TEXEL1: bind tile 1 as a second GX texture so the combiner's TEXEL1 reads
 # the image the game loaded there (water, blinking lights, the two-texture
 # fonts), instead of a copy of TEXEL0. 0 puts the old approximation back.
@@ -253,7 +260,7 @@ DEFINES := \
 	-D_LANGUAGE_C -D_FINALROM -DNDEBUG -DMODERN_CC \
 	-DF3DDKR_GBI \
 	-DGC_MAIN_POOL_MB=$(GC_MAIN_POOL_MB) \
-	$(if $(filter 1,$(GC_DEBUG)),-DGC_DEBUG,) 	-DGC_NO_CULL=$(GC_NO_CULL) 	-DGC_BILLBOARD=$(GC_BILLBOARD) 	-DGC_RENDERMODE=$(GC_RENDERMODE) 	-DGC_COMBINER=$(GC_COMBINER) 	-DGC_TEXTEST=$(GC_TEXTEST) 	-DGC_PROJ_TINT=$(GC_PROJ_TINT) -DGC_TEXEL1=$(GC_TEXEL1) -DGC_DEFLICKER=$(GC_DEFLICKER) -DGC_2DTEST=$(GC_2DTEST) -DGC_AUDIOTEST=$(GC_AUDIOTEST) -DGC_DYNLIT2=$(GC_DYNLIT2) -DGC_AUDIO_FX=$(GC_AUDIO_FX) -DGC_SDLOG=$(GC_SDLOG) -DGC_MEMCARD=$(GC_MEMCARD) -DGC_FORCE_PAL=$(GC_FORCE_PAL) -DGC_CRASHTEST=$(GC_CRASHTEST) \
+	$(if $(filter 1,$(GC_DEBUG)),-DGC_DEBUG,) 	-DGC_NO_CULL=$(GC_NO_CULL) 	-DGC_BILLBOARD=$(GC_BILLBOARD) 	-DGC_RENDERMODE=$(GC_RENDERMODE) 	-DGC_COMBINER=$(GC_COMBINER) 	-DGC_TEXTEST=$(GC_TEXTEST) 	-DGC_PROJ_TINT=$(GC_PROJ_TINT) -DGC_TEXEL1=$(GC_TEXEL1) -DGC_DEFLICKER=$(GC_DEFLICKER) -DGC_2DTEST=$(GC_2DTEST) -DGC_AUDIOTEST=$(GC_AUDIOTEST) -DGC_AUDIODUMP=$(GC_AUDIODUMP) -DGC_DYNLIT2=$(GC_DYNLIT2) -DGC_AUDIO_FX=$(GC_AUDIO_FX) -DGC_SDLOG=$(GC_SDLOG) -DGC_MEMCARD=$(GC_MEMCARD) -DGC_FORCE_PAL=$(GC_FORCE_PAL) -DGC_CRASHTEST=$(GC_CRASHTEST) \
 	-DVERSION_us_v77 \
 	-DBUILD_VERSION=VERSION_G -DBUILD_VERSION_STRING=\"2.0G\"
 

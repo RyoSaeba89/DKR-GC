@@ -9,6 +9,175 @@ what is left.
 
 ---
 
+## WHAT IS LEFT -- read this first (2026-09-06)
+
+**The port is playable and the audio crackle is fixed.** Menu text, the title
+logo, the HUD, 2D sprites, lighting, frame pacing, saving and now sound are
+all confirmed correct on real PAL hardware. Released as `v0.1.0-beta`.
+
+**One open defect:** the game hard-locks after several minutes. The log of the
+run that did it stops mid-beat at 22 620 retraces (about 7.5 minutes) with no
+crash report written, and a texture was seen to corrupt shortly before.
+Nothing in that log moves before it stops -- the pool is steady at 780/1600
+slots, `held` is flat around 700 KB, `gzip 6080 ok, 0 failed`, `asserts 0`,
+`n64 io 0 unknown`, `ai steps 0`. See "The lock-up" below.
+
+---
+
+## The crackle: DKR's envelope `rate` is an increment, not a multiplier
+
+**Fixed 2026-09-06.** This is the last of the audio defects and the one that
+survived every earlier hunt, so the whole chain is worth keeping.
+
+### What was measured
+
+`GC_AUDIODUMP=1` writes one second of the game's own mixed output to
+`dkr.pcm`, captured at `osAiSetNextBuffer` before the port resamples it. Read
+offline -- **as big-endian**; reading it little-endian produced full-scale
+noise and nearly invented a second defect -- the shape was unambiguous:
+
+> In the **left** channel, and only there, **every sample whose index is a
+> multiple of 8 was wrong** -- all of them, not just the audible ones. Lanes
+> 1-7 and the whole right channel were clean.
+
+Mean |second difference| by index mod 8, left: `5219 2729 416 513 422 510 417
+2768`. Right: `797 592 434 534 450 538 435 715`. The lane-0 residual had rms
+4228 against 406 for a control lane -- **larger than the signal** (3325) and
+only weakly correlated with it, so lane 0 was not mis-scaled; something else
+was landing in it. Correlation against the left channel at every lag from 8
+to 3000 frames peaked at 0.20, which ruled out the reverb tail.
+
+Eight samples is sixteen bytes: one RSP vector.
+
+### How the stage was named
+
+A `lane0` probe -- the same mod-8 curvature ratio, measured inside the mixer
+and printed per beat as a percentage, 100 being a clean buffer. First at the
+mainbus:
+
+    aud lane0: mainL 634% | mainR 166% | mixL 832% | auxL 288%
+
+`mixL` is AL_MAIN_L_OUT sampled *before* AL_AUX_L_OUT is mixed into it, and it
+was always the dirtiest while `auxL` stayed near 100 %. Adding the aux
+*diluted* the defect, so the reverb and `a_pole_filter` were cleared. Then the
+same probe along the voice chain:
+
+    aud lane0: mainL 1102% | mainR 159% | envin 100% | envL 1321%
+             | envR 103% | rsout 101% | adout 102%
+
+The envelope mixer's input, the resampler's output and the ADPCM decoder's
+output were all clean; its dry-left output was not. One run, one stage.
+
+### The bug
+
+`platform/gc/audio/audio_mixer.c`'s `a_env_mixer` was transcribed from
+sm64-port's scalar `aEnvMixerImpl`, where the envelope is **exponential**: the
+eight lanes are seeded with `vol * (1 + (rate - 1) * (i+1)/8)` and every group
+of eight scales them by `rate`.
+
+DKR's audio ABI is **additive**, and the proof was in this repository the
+whole time. `libultra/src/audio/env.c`:
+
+```c
+a = (tgt - vol) / (f32)count;  a *= 8;                     /* _getRate */
+
+r = ((ratem<<16) + (f32) ratel)/65536.0;
+ivol += (r * samples) / 8.0;                               /* _getVol  */
+```
+
+`_getRate` returns a volume **difference** per eight samples, and `_getVol` is
+the game keeping its own copy of the envelope in step with the RSP -- by
+**adding**. The game's model of what the microcode does is the authority, and
+it says increment.
+
+Read multiplicatively, an ordinary rate -- a one-second segment gives `a`
+about 12, i.e. `rate` about 0xBE666 -- scaled every lane by twelve *inside a
+single group of eight* and then let the target clamp pin it. The gain
+sawtoothed once per eight samples and reset: exactly the measured defect. Two
+further faults rode on the same confusion:
+
+- `sRspa.vol[0] * (rate[0] - 0x10000)` overflowed a signed 32-bit multiply at
+  those rates, flipping the ramp's sign;
+- `(rate >> 16) > 0` classed every rate below 1.0 -- that is, every gentle
+  fade **in** -- as a fade out, and clamped it to the target from the wrong
+  side.
+
+### The fix, and its before/after
+
+Seed `vols[c][i] = (vol[c] << 16) + rate[c] * (i+1) / 8` in 64-bit, advance
+with `vols[c][i] += rate[c]`, and test `rate[c] > 0` for the direction.
+`step_diff` is gone, and with it the "not a typo" `vol[0]`-for-both-channels
+quirk -- that was sm64's, and it only ever made sense multiplicatively.
+
+Measured by lifting the function out of the port into a host program and
+running it against the rates `_getRate` really produces (lane-0 against
+lane-4 curvature ratio):
+
+| case | before | after |
+|---|---|---|
+| 1 s fade in | 259.90 | 1.05 |
+| 1 s fade out | 527.21 | 1.06 |
+| instant (`count == 0`) | 127.37 | 1.06 |
+| steady, rate 0 | 1.06 | 1.06 |
+
+The last row is clean either way, which is why the crackle was
+content-dependent: only voices with a moving envelope were affected.
+
+Confirmed on console: `aud lane0` reads 95-103 % on every probe, `ai steps`
+fell from 250-3500 per beat to **0**, and the captured waveform's per-lane
+curvature is flat (`3752 3866 3802 3869 3892 3858 3973 3870`).
+
+### The two rules that came out of it
+
+- **A transcription's reference may be the wrong game.** `a_env_mixer` was
+  faithful to sm64-port and wrong for DKR. Worse, the scalar branch it was
+  copied from is dead code in the reference -- x86 builds take the SSE path
+  and ARM the NEON one -- so it had never run anywhere.
+- **Lift the suspect function out and run it on the PC.** `a_env_mixer` is
+  pure C; copying it into a host program and sweeping the parameter space
+  reproduced the defect with no console at all, after three hardware runs had
+  been spent narrowing to it. A pure function in this port is a free
+  experiment and should be reached for much earlier.
+
+### The instruments, which stay
+
+- `GC_AUDIODUMP=1` -- one second of the game's own output to `dkr.pcm`, armed
+  on the phenomenon (the first step larger than 14000 counts in the game's own
+  samples) rather than on a timer, so the capture contains the defect. The
+  capture is deterministic: it arms about four seconds in, on the intro music,
+  so a run is ten seconds and an A/B is repeatable.
+- `aud lane0:` in the `GC_DEBUG` heartbeat -- the mod-8 curvature ratio at
+  seven points along the mixer. 100 % is a clean buffer.
+
+---
+
+## The lock-up (open, 2026-09-06)
+
+After several minutes of play the machine stops. The evidence so far is thin
+and mostly negative:
+
+- The log ends **mid-beat**, part-way through the render-state dump, at
+  22 620 retraces. So the writer died between two flushes.
+- **No `dkr.crash` was written**, and libogc's exception screen did not reach
+  the log either. A hang rather than a caught exception, or an exception in a
+  state where the handler could not report.
+- Nothing trends. Over the whole run the pool sits at 605-806 of 1600 slots
+  with 1.4 MB free and a 1.39 MB largest block, the texture cache holds a flat
+  ~700 KB, `gzip 6080 ok, 0 failed`, `asserts 0`, `n64 io ... 0 unknown`, and
+  `tex asks = hits + converts` with `NULL dim 0 addr 0 alloc 0`.
+- A texture was seen to corrupt shortly before. **The `head ffffffff` lines in
+  the texture dump are not it** -- they are present from the first beat and
+  are unused slots.
+
+Corruption that shows in a texture and then stops the machine points at a
+write going somewhere it should not, which is the same class as the
+`osInvalDCache` defect fixed on 2026-09-04. The next step is a run that can
+say *where*: a guard pattern around the texture cache and the main pool,
+checked each beat, and a crash handler whose report path survives.
+
+---
+
+
 ## Build
 
 ```sh
