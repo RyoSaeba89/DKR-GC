@@ -15,12 +15,10 @@ what is left.
 logo, the HUD, 2D sprites, lighting, frame pacing, saving and now sound are
 all confirmed correct on real PAL hardware. Released as `v0.1.0-beta`.
 
-**One open defect:** the game hard-locks after several minutes. The log of the
-run that did it stops mid-beat at 22 620 retraces (about 7.5 minutes) with no
-crash report written, and a texture was seen to corrupt shortly before.
-Nothing in that log moves before it stops -- the pool is steady at 780/1600
-slots, `held` is flat around 700 KB, `gzip 6080 ok, 0 failed`, `asserts 0`,
-`n64 io 0 unknown`, `ai steps 0`. See "The lock-up" below.
+**One open defect:** after seven or eight minutes the renderer stores to an
+address outside RAM and the machine faults. Four textures come up entirely
+`0xFF` about half a minute before it. See "The open defect" below -- and note
+that the first thing to fix is the crash handler, which loses its own report.
 
 ---
 
@@ -151,29 +149,108 @@ curvature is flat (`3752 3866 3802 3869 3892 3858 3973 3870`).
 
 ---
 
-## The lock-up (open, 2026-09-06)
+## The open defect: a wild store in the renderer (2026-09-06)
 
-After several minutes of play the machine stops. The evidence so far is thin
-and mostly negative:
+After seven or eight minutes of play the machine stops. A photograph of the
+crash screen, resolved against the frozen ELF of that exact build, turns it
+from "it hangs" into something with an address.
 
-- The log ends **mid-beat**, part-way through the render-state dump, at
-  22 620 retraces. So the writer died between two flushes.
-- **No `dkr.crash` was written**, and libogc's exception screen did not reach
-  the log either. A hang rather than a caught exception, or an exception in a
-  state where the handler could not report.
-- Nothing trends. Over the whole run the pool sits at 605-806 of 1600 slots
-  with 1.4 MB free and a 1.39 MB largest block, the texture cache holds a flat
-  ~700 KB, `gzip 6080 ok, 0 failed`, `asserts 0`, `n64 io ... 0 unknown`, and
-  `tex asks = hits + converts` with `NULL dim 0 addr 0 alloc 0`.
-- A texture was seen to corrupt shortly before. **The `head ffffffff` lines in
-  the texture dump are not it** -- they are present from the first beat and
-  are unused slots.
+### The stack
 
-Corruption that shows in a texture and then stops the machine points at a
-write going somewhere it should not, which is the same class as the
-`osInvalDCache` defect fixed on 2026-09-04. The next step is a run that can
-say *where*: a guard pattern around the texture cache and the main pool,
-checked each beat, and a crash handler whose report path survives.
+    thread_trampoline -> thread3_main -> main_game_loop -> mode_game
+      -> render_scene -> initialise_player_viewport_vars
+        -> render_level_geometry_and_objects        <- the fault is here
+          -> __wrap_c_default_exceptionhandler
+
+### The screen describes the *second* exception, and that is the trap
+
+`SRR0 80007030` lands inside the port's own exception wrapper, and the
+disassembly says exactly where:
+
+    80007018:  bl      gc_logfile_set_crash_mode
+    8000701c:  mfmsr   r9                     <- LR points here
+    80007024:  ori     r9,r9,40960            <- 0xA000 = MSR_FP | MSR_EE
+    80007028:  mtmsr   r9                     <- interrupts re-enabled
+    8000702c:  lis     r9,-32750
+    80007030:  li      r4,15                  <- SRR0: the exception is HERE
+    80007040:  bl      gc_logfile_write       <- the "*** exception " marker
+
+`li r4,15` cannot fault. So this is an **asynchronous external interrupt taken
+on the first instruction after the handler re-enabled MSR[EE]** — four
+instructions in, and before a single byte of the report was written. `SRR1
+0000B030` confirms EE, FP, ME, IR and DR were all set. It re-entered the
+wrapper, `sInHandler` was already true, and it fell straight through to
+libogc's dump, which never returns.
+
+That is why there is no report: the log's reserved 24 KB crash area is
+entirely empty and no `dkr.crash` exists. The wrapper had already copied the
+real SRR0, LR, DAR and DSISR into `sRecord` — GPR29 in the dump points at it —
+so the evidence existed in RAM and was simply never emitted.
+
+**This is the second time this handler has lost a report by re-enabling
+interrupts.** The rationale for doing so is real and documented in
+`gc_crash.c`: libfat, newlib and EXI all need interrupts, and with them off the
+first hardware crash produced an empty log. But the balance is wrong. The
+handler has to show its evidence on a *polled* path first — `write()` to the
+framebuffer console works with EE clear — and only then attempt the card.
+
+### What survives, and it is the useful half
+
+An external interrupt writes neither DAR nor DSISR, so both are stale from the
+first fault:
+
+    DAR 8A70B57C   DSISR 04000000
+
+DSISR bit 5 alone means the access was a **store**, and `0x8A70B57C` is 175 MB
+past the start of RAM, which ends at `0x81800000`. So
+`render_level_geometry_and_objects` stored to an address nowhere near memory.
+
+That is the same class as the four all-`0xFF` textures the log shows at
+`80320b70 / 80321c10 / 80322cb0 / 80323d50`, which first appear 28 seconds
+before the crash (beat 21 720 against 23 100) and never appear with any other
+contents. Those addresses are inside `gMainMemoryPool`, which starts at
+`0x801AED60` — deduced from `GPR18 = gMainMemoryPool + 0x11A304`. A pointer
+computed wrongly writes where it should not: sometimes that lands in the pool
+and paints a texture white, sometimes it lands outside RAM and faults.
+
+### The registers that name the area
+
+    GPR15 80163AEC  gWaveDL            GPR25 80163A38  gTrackDL
+    GPR20 801638C4  gGameCurrMatrix    GPR14 80631714  gWaveController
+    GPR18 802C9064  gMainMemoryPool + 0x11A304
+    GPR07 817FFFFF  = 0x81800000 - 1, the RAM_END bound gfx_gx.c tests against
+
+`gfx_gx.c` already bounds-checks texture and image addresses against
+`0x80003000 .. 0x81800000` in four places, so the store either does not go
+through those checks or is not a texture access at all.
+
+### Nothing else moves
+
+Over the whole run the pool sits at 605-806 of 1600 slots with 1.4 MB free and
+a 1.39 MB largest block; the texture cache is flat at 700-845 KB; `gzip 6101
+ok, 0 failed`; `asserts 0`; `n64 io ... 0 unknown`; `ai steps 3`; `aud lane0`
+100 %. There is no leak and no exhaustion — just a write going astray.
+
+### Reading the log
+
+The body is a 232 KB ring. `[log wrapped]` marks the wrap, and **after it the
+newest content is at the top of the file**. Find the boundary by scanning
+`^dkr-gc: N retr` for the point where N jumps backwards; in this log it is
+between line 535 (23 100 retraces, the last beat) and line 635 (21 360).
+
+### Plan, cheapest first
+
+1. **Make the first fault reportable** — the blocker for everything else.
+   Emit a one-line summary (exception number, SRR0, LR, DAR, DSISR, r1) on the
+   polled path before `mtmsr(EE)`, and print it again on re-entry instead of
+   falling through to libogc's dump. Or hand the record to `gc_crash_poll` on
+   the boot thread, which is what it was built for.
+2. Re-run and read the real SRR0. One `addr2line` names the instruction.
+3. If that is not enough, a guard pattern around `gMainMemoryPool` and the
+   texture cache, checked per beat, to catch the store nearer the act.
+4. Offline and free: decompress the ROM's 3D textures and ask whether an
+   all-white 64x32 RGBA16 asset exists at all. If none does, the `0xFF`
+   buffers cannot have come from the image and the wild store is proven.
 
 ---
 
