@@ -525,6 +525,187 @@ void gc_crash_poll(void) {
     }
 }
 
+/* ---- surviving what the N64 survived ------------------------------------- *
+ *
+ * The wave crash of 2026-09-07 was not a wild store: it was an ordinary
+ * `lwzx` reading `D_800E30D4[0x01FF0000]`, an index the game never bounded. On
+ * the N64 that costs nothing -- `D_800E30D4` is a KSEG0 pointer, KSEG0 is not
+ * translated, and a load from a physical address with nothing behind it
+ * returns junk and carries on. On the GameCube the same address is outside
+ * every BAT and the CPU takes a DSI.
+ *
+ * That is a *class*, not an incident, and the honest thing to say about it is
+ * that a decompilation this size cannot be proved free of unbounded indices by
+ * reading it. So the port stops guessing and counts instead: an access to an
+ * address the machine does not have is stepped over, its destination register
+ * zeroed, and recorded. The game then behaves the way it did on the console it
+ * was written for, and the heartbeat says -- every beat, with the faulting PC
+ * -- how many such accesses this build actually makes. Zero of them is the
+ * claim "there are no others"; anything else is a list for addr2line.
+ *
+ * This works because libogc's vector routine restores the whole frame and
+ * `rfi`s (`lwz r4,12(r1) ; mtsrr0 r4`), so writing ctx->srr0 and ctx->gpr here
+ * resumes the interrupted instruction stream. Disassembled, not assumed.
+ *
+ * Nothing here logs: the handler runs with MSR[EE] clear and gc_logfile_write
+ * takes a mutex outside crash mode. The sites are recorded in BSS and printed
+ * by the heartbeat, on the boot thread, where locking is legal.
+ */
+
+#define GC_DSI_SITES 8
+
+static struct {
+    u32 srr0;
+    u32 dar;
+    u32 count;
+} sDsiSite[GC_DSI_SITES];
+
+static u32 sDsiSites;
+static u32 sDsiTotal;
+static u32 sDsiLost; /* faults at an impossible address we could not decode */
+static u32 sDsiPrinted;
+
+/* The addresses this machine actually has. Everything else is an access the
+ * N64 would have answered with junk. */
+static BOOL addr_is_real(u32 a) {
+    return (a >= 0x80000000u && a < 0x81800000u) || /* MEM1, cached */
+           (a >= 0xC0000000u && a < 0xC1800000u) || /* MEM1, uncached */
+           (a >= 0xCC000000u && a < 0xCD010000u) || /* hardware registers */
+           (a >= 0xE0000000u && a < 0xE0004000u);   /* the locked cache */
+}
+
+/*
+ * Decode enough of a load or store to step over it -- only the forms a C
+ * compiler actually emits. Anything unrecognised is refused and the caller
+ * reports a crash: silence would be worse than the fault.
+ */
+static BOOL step_over_access(frame_context *ctx, u32 dar) {
+    u32 insn;
+    u32 op, d, a, xo;
+    BOOL isLoad = FALSE;
+    BOOL isFloat = FALSE;
+    BOOL update = FALSE;
+    BOOL known = FALSE;
+
+    if (!addr_is_real(ctx->srr0) || (ctx->srr0 & 3) != 0) {
+        return FALSE;
+    }
+    insn = *(const volatile u32 *) ctx->srr0;
+    op = insn >> 26;
+    d = (insn >> 21) & 31;
+    a = (insn >> 16) & 31;
+    xo = (insn >> 1) & 0x3FF;
+
+    switch (op) {
+        case 32: case 34: case 40: case 42:            /* lwz   lbz   lhz   lha   */
+            isLoad = known = TRUE; break;
+        case 33: case 35: case 41: case 43:            /* lwzu  lbzu  lhzu  lhau  */
+            isLoad = update = known = TRUE; break;
+        case 36: case 38: case 44:                     /* stw   stb   sth   */
+            known = TRUE; break;
+        case 37: case 39: case 45:                     /* stwu  stbu  sthu  */
+            update = known = TRUE; break;
+        case 46: case 47:                              /* lmw stmw: step, touch nothing */
+            known = TRUE; break;
+        case 48: case 50:                              /* lfs   lfd   */
+            isLoad = isFloat = known = TRUE; break;
+        case 49: case 51:                              /* lfsu  lfdu  */
+            isLoad = isFloat = update = known = TRUE; break;
+        case 52: case 54:                              /* stfs  stfd  */
+            known = TRUE; break;
+        case 53: case 55:                              /* stfsu stfdu */
+            update = known = TRUE; break;
+        case 31:
+            switch (xo) {
+                case 23: case 87: case 279: case 343:  /* lwzx  lbzx  lhzx  lhax  */
+                case 534: case 790:                    /* lwbrx lhbrx */
+                    isLoad = known = TRUE; break;
+                case 55: case 119: case 311: case 375: /* lwzux lbzux lhzux lhaux */
+                    isLoad = update = known = TRUE; break;
+                case 151: case 215: case 407:          /* stwx  stbx  sthx  */
+                case 662: case 918:                    /* stwbrx sthbrx */
+                case 1014:                             /* dcbz */
+                    known = TRUE; break;
+                case 183: case 247: case 439:          /* stwux stbux sthux */
+                    update = known = TRUE; break;
+                case 535: case 599:                    /* lfsx  lfdx  */
+                    isLoad = isFloat = known = TRUE; break;
+                case 567: case 631:                    /* lfsux lfdux */
+                    isLoad = isFloat = update = known = TRUE; break;
+                case 663: case 727:                    /* stfsx stfdx */
+                    known = TRUE; break;
+                case 695: case 759:                    /* stfsux stfdux */
+                    update = known = TRUE; break;
+                default: break;
+            }
+            break;
+        default: break;
+    }
+
+    if (!known) {
+        return FALSE;
+    }
+
+    if (isLoad && op != 46) {
+        if (isFloat) {
+            /* Two words rather than a double: MSR[FP] is still clear here, and
+             * a floating store would take the very exception this file spent
+             * four hardware runs learning about. */
+            ((volatile u32 *) &ctx->fpr[d])[0] = 0;
+            ((volatile u32 *) &ctx->fpr[d])[1] = 0;
+        } else {
+            ctx->gpr[d] = 0;
+        }
+    }
+    if (update && a != 0) {
+        ctx->gpr[a] = dar;
+    }
+    ctx->srr0 += 4;
+    return TRUE;
+}
+
+static void note_recovery(u32 srr0, u32 dar) {
+    u32 i;
+
+    sDsiTotal++;
+    for (i = 0; i < sDsiSites; i++) {
+        if (sDsiSite[i].srr0 == srr0) {
+            sDsiSite[i].count++;
+            sDsiSite[i].dar = dar;
+            return;
+        }
+    }
+    if (sDsiSites < GC_DSI_SITES) {
+        sDsiSite[sDsiSites].srr0 = srr0;
+        sDsiSite[sDsiSites].dar = dar;
+        sDsiSite[sDsiSites].count = 1;
+        sDsiSites++;
+    }
+}
+
+void gc_crash_log_recoveries(void) {
+    u32 i;
+
+    if (sDsiTotal == 0 && sDsiLost == 0) {
+        return;
+    }
+    gc_logfile_printf("\n           dsi rec %u at %u sites%s", (unsigned) sDsiTotal,
+                      (unsigned) sDsiSites, (sDsiSites == GC_DSI_SITES) ? " (table full)" : "");
+    if (sDsiLost != 0) {
+        gc_logfile_printf(", %u NOT decoded", (unsigned) sDsiLost);
+    }
+    for (i = 0; i < sDsiSites; i++) {
+        gc_logfile_printf(" | %08x x%u dar %08x", (unsigned) sDsiSite[i].srr0,
+                          (unsigned) sDsiSite[i].count, (unsigned) sDsiSite[i].dar);
+    }
+    /* Flushed on the beat that first sees a new site: this is the one counter
+     * whose value is worth the frame it costs. */
+    if (sDsiPrinted != sDsiSites) {
+        sDsiPrinted = sDsiSites;
+        gc_logfile_flush();
+    }
+}
+
 /* ---- the interception ---------------------------------------------------- */
 
 void __real_c_default_exceptionhandler(frame_context *ctx);
@@ -557,6 +738,22 @@ void __wrap_c_default_exceptionhandler(frame_context *ctx) {
      * Re-entrancy. The second time through we write nothing -- the card path
      * is what faults -- but we do not show the second fault either.
      */
+    /*
+     * An access to an address this machine does not have, stepped over rather
+     * than reported. See "surviving what the N64 survived" above.
+     */
+    if (!sInHandler && ctx->nExcept == EX_DSI) {
+        u32 dar = mfspr(19);
+
+        if (!addr_is_real(dar)) {
+            if (step_over_access(ctx, dar)) {
+                note_recovery(ctx->srr0 - 4, dar);
+                return;
+            }
+            sDsiLost++;
+        }
+    }
+
     if (sInHandler) {
         crash_puts("\n*** second exception ");
         crash_dec((s32) ctx->nExcept);

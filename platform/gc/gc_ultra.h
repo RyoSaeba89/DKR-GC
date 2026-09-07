@@ -83,6 +83,12 @@ void gc_crash_init(void);
  * when there is no pending report, which is every call but at most one. */
 void gc_crash_poll(void);
 
+/* Print, once per heartbeat, how many accesses to addresses this machine does
+ * not have were stepped over instead of faulting, and where. Zero is the claim
+ * that the game indexes nothing out of range; anything else is a list for
+ * addr2line. Defined in gc_crash.c. */
+void gc_crash_log_recoveries(void);
+
 /* Truncate the log and note which path took it. Call once, after the FAT
  * volume is mounted and before anything worth logging happens. */
 void gc_logfile_init(void);
