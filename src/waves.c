@@ -101,8 +101,38 @@ s32 gWaveTileCountZ;    // used in mempool_alloc_safe size calculation
 s32 gNumberOfLevelSegments;
 s32 D_8012A0E8[64];
 s16 gWaveBlockIDs[512]; // used to index gWaveModel and as arg0 for func_800B92F4 and func_800B97A8
+#ifdef TARGET_GC
+/*
+ * One list of twenty-six, under two names -- and on the GameCube it has to be
+ * said out loud.
+ *
+ * func_800B92F4 walks it with `for (k = 0; D_8012A5E8[k].blockID != -1; k++)`,
+ * and D_8012A5E8 holds *two* entries. That is not a bug on the N64: the linker
+ * put D_8012A600[24] immediately after it (0x8012A5E8 + 2*12 = 0x8012A600, and
+ * the names say so), so the two are one contiguous list of 26 and the loop is
+ * meant to run through both. waves_visibility writes the -1 terminator into
+ * all twenty-six of them for the same reason.
+ *
+ * GCC put them the other way round. In the GameCube build D_8012A600 came
+ * first and what followed D_8012A5E8[1] was `gWaveBlockIDs`, measured at
+ * 8061bcd4 + 0x18 = 8061bcec. So the loop read the visible-tile list as if it
+ * were tile entries -- an id is never -1, so it never stopped where it should
+ * -- and then *wrote back* into it: `D_8012A5E8[k].unk8++` runs once per
+ * vertex. That is the flickering water. It matches every number the heartbeat
+ * gave: one id per frame turned into something between 42 and 63 while the
+ * wave model never moved, `from draw` every time, `bad unkC 0`.
+ *
+ * Declaring the 26 as one array and naming the halves out of it puts the
+ * layout back and makes the walk legal C at the same time. The N64 build keeps
+ * the two objects it has always had.
+ */
+static unk8012A5E8 gGcWaveTileList[26];
+#define D_8012A5E8 gGcWaveTileList
+#define D_8012A600 (*(unk8012A5E8(*)[24])(gGcWaveTileList + 2))
+#else
 unk8012A5E8 D_8012A5E8[2];
 unk8012A5E8 D_8012A600[24];
+#endif
 f32 gWavePowerBase;
 f32 gWaveMagnitude;
 s32 gWavePowerDivisor;
