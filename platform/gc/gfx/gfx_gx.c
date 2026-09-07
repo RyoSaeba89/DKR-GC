@@ -3055,7 +3055,27 @@ static void gfx_fill_rect(u32 w0, u32 w1) {
      * depth. gfx_set_2d_state is exactly that state, and a preceding batch
      * can have left the blender on. */
     gfx_set_2d_state();
+#if GC_CLEARTINT
+    {
+        /*
+         * The second half of GC_CLEARTINT, and the reason the first half could
+         * not answer on its own.
+         *
+         * DKR fills the whole screen every frame -- `cover kind4 area
+         * 1000/1000` in the heartbeat -- so the magenta the EFB was cleared to
+         * is painted over before anything else is drawn, and a magenta clear
+         * can never show. Tinting this rectangle green gives the three cases
+         * three colours: magenta is a pixel nothing touched at all, green is
+         * the game's own screen fill showing through a hole in the scene drawn
+         * over it, and black is something that actually draws black.
+         */
+        GXColor tint = { 0, 0xFF, 0, 0xFF };
+
+        gfx_draw_rect(ulx, uly, lrx + 1.0f, lry + 1.0f, tint);
+    }
+#else
     gfx_draw_rect(ulx, uly, lrx + 1.0f, lry + 1.0f, sFillColor);
+#endif
 }
 
 #ifdef GC_DEBUG
