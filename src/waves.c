@@ -550,6 +550,64 @@ void waves_visibility(s32 xPosition, s32 yPosition, s32 zPosition, s32 currentVi
     func_800BA288(currentViewport, updateRate);
 }
 
+#ifdef TARGET_GC
+/*
+ * The wave indices, bounded -- and why the N64 did not need this.
+ *
+ * waves_block_hq walks gWaveModel looking for a block and, when it does not
+ * find one, leaves indexNum == gNumberOfLevelSegments and reads
+ * gWaveModel[indexNum].unkC anyway: one entry past the array, which is where
+ * gWaveGenList begins. waves_render then indexes D_800E30D4 with whatever that
+ * held. On the N64 that is survivable by accident -- D_800E30D4 is a KSEG0
+ * pointer, KSEG0 is not translated, and a load from a physical address with
+ * nothing behind it returns junk without an exception. On the GameCube the
+ * same address is outside every BAT and the CPU takes a DSI: on 2026-09-07 it
+ * was `lwzx r31,r8,r9` in waves_render with r8 = D_800E30D4 = 802A1FF0 and an
+ * index of 0x01FF0000, DAR 88261FF0, at the moment a new part of the island
+ * streamed in.
+ *
+ * So the bound is added rather than the behaviour changed: an index the N64
+ * would have answered with junk is answered with zero, which reads as "not a
+ * high-quality wave tile" and is the safe half of that coin. Both report the
+ * first few times, with everything needed to say which invariant broke, and
+ * then go quiet -- this can fire once per frame.
+ */
+void gc_logfile_mark(const char *fmt, ...);
+
+static s32 gc_wave_reports = 0;
+
+static s32 gc_wave_tile_flags(u32 unkC) {
+    s32 count = gWaveTileCountX * gWaveTileCountZ;
+
+    if (D_800E30D4 != NULL && unkC < (u32) count) {
+        return D_800E30D4[unkC];
+    }
+    if (gc_wave_reports < 8) {
+        gc_wave_reports++;
+        gc_logfile_mark("waves: unkC %u of %d (tbl %08x, model %08x, segs %d, vis %d, grid %dx%d)", unkC,
+                        count, (u32) D_800E30D4, (u32) gWaveModel, gNumberOfLevelSegments, gVisibleWaveTiles,
+                        gWaveTileCountX, gWaveTileCountZ);
+    }
+    return 0;
+}
+
+static s32 gc_wave_block_ok(s32 index) {
+    if (gWaveModel != NULL && (u32) index < (u32) gNumberOfLevelSegments) {
+        return TRUE;
+    }
+    if (gc_wave_reports < 8) {
+        gc_wave_reports++;
+        gc_logfile_mark("waves: block %d of %d (model %08x, vis %d)", index, gNumberOfLevelSegments,
+                        (u32) gWaveModel, gVisibleWaveTiles);
+    }
+    return FALSE;
+}
+
+#define WAVE_TILE_FLAGS(unkC) gc_wave_tile_flags((u32) (unkC))
+#else
+#define WAVE_TILE_FLAGS(unkC) D_800E30D4[unkC]
+#endif
+
 /**
  * Returns whether the current wave tile is expected to be the high quality wavegen, over the standard flat plane.
  */
@@ -559,8 +617,20 @@ s32 waves_block_hq(LevelModelSegment *block) {
     while (indexNum < gNumberOfLevelSegments && block != gWaveModel[indexNum].block) {
         indexNum++;
     };
-    if (D_800E30D4[gWaveModel[indexNum].unkC]) {
+#ifdef TARGET_GC
+    /* Not found: the original reads one entry past gWaveModel here. */
+    if (!gc_wave_block_ok(indexNum)) {
+        return FALSE;
+    }
+#endif
+    if (WAVE_TILE_FLAGS(gWaveModel[indexNum].unkC)) {
         result = TRUE;
+#ifdef TARGET_GC
+        /* gWaveBlockIDs holds 512 and the original never counts. */
+        if (gVisibleWaveTiles >= (s32) ARRAY_COUNT(gWaveBlockIDs)) {
+            return FALSE;
+        }
+#endif
         gWaveBlockIDs[gVisibleWaveTiles++] = indexNum;
     }
     return result;
@@ -594,11 +664,11 @@ void func_800B92F4(s32 blockID, s32 viewportID) {
         }
 
         if (gWaveController.doubleDensity) {
-            sp98 = (((u32) D_800E30D4[sp6C->unkC] >> (D_8012A5E8[k].unk2 * 8)) & 0xFF) - 1;
+            sp98 = (((u32) WAVE_TILE_FLAGS(sp6C->unkC) >> (D_8012A5E8[k].unk2 * 8)) & 0xFF) - 1;
             sp8C = (D_8012A5E8[k].unk2 & 1) * gWaveController.subdivisions;
             sp88 = ((D_8012A5E8[k].unk2 & 2) >> 1) * gWaveController.subdivisions;
         } else {
-            sp98 = (D_800E30D4[sp6C->unkC] & 0xFF) - 1;
+            sp98 = (WAVE_TILE_FLAGS(sp6C->unkC) & 0xFF) - 1;
             sp8C = 0;
             sp88 = 0;
         }
@@ -694,11 +764,11 @@ void func_800B97A8(s32 blockID, s32 arg1) {
         }
 
         if (gWaveController.doubleDensity) {
-            spA8 = (((u32) D_800E30D4[sp78->unkC] >> (D_8012A5E8[k].unk2 * 8)) & 0xFF) - 1;
+            spA8 = (((u32) WAVE_TILE_FLAGS(sp78->unkC) >> (D_8012A5E8[k].unk2 * 8)) & 0xFF) - 1;
             sp9C = (D_8012A5E8[k].unk2 & 1) * gWaveController.subdivisions;
             sp98 = ((s32) (D_8012A5E8[k].unk2 & 2) >> 1) * gWaveController.subdivisions;
         } else {
-            spA8 = (D_800E30D4[sp78->unkC] & 0xFF) - 1;
+            spA8 = (WAVE_TILE_FLAGS(sp78->unkC) & 0xFF) - 1;
             sp9C = 0;
             sp98 = 0;
         }
@@ -884,7 +954,7 @@ void func_800BA288(s32 arg0, s32 arg1) {
         if (D_8012A0E8[gWaveModel[i].unkB] & (1 << gWaveModel[i].unkA)) {
             if (gWaveController.doubleDensity) {
                 for (j = 0; j < 4; j++) {
-                    if (D_800E30D4[gWaveModel[i].unkC] & (0xFF << (j << 3))) {
+                    if (WAVE_TILE_FLAGS(gWaveModel[i].unkC) & (0xFF << (j << 3))) {
                         if (arg1 < gWaveModel[i].unk14[arg0].unk0[j]) {
                             gWaveModel[i].unk14[arg0].unk0[j] -= arg1;
                         } else {
@@ -899,7 +969,7 @@ void func_800BA288(s32 arg0, s32 arg1) {
                     }
                 }
             } else {
-                if (D_800E30D4[gWaveModel[i].unkC]) {
+                if (WAVE_TILE_FLAGS(gWaveModel[i].unkC)) {
                     if (arg1 < gWaveModel[i].unk14[arg0].unk0[0]) {
                         gWaveModel[i].unk14[arg0].unk0[0] -= arg1;
                     } else {
@@ -1032,6 +1102,14 @@ void waves_render(Gfx **dList, Mtx **mtx, s32 viewportID) {
         transform.rotation.x = transform.rotation.y = transform.rotation.z = 0;
         // High Quality water
         for (; i < gVisibleWaveTiles; i++) {
+#ifdef TARGET_GC
+            /* The id was valid when waves_block_hq stored it; it need not be
+             * still valid now, and a stale one indexes gWaveModel out of its
+             * allocation. Skipping the tile costs a patch of water. */
+            if (!gc_wave_block_ok(gWaveBlockIDs[i])) {
+                continue;
+            }
+#endif
             if (gWaveController.xlu) {
                 func_800B92F4(gWaveBlockIDs[i], viewportID);
             } else {
@@ -1041,7 +1119,7 @@ void waves_render(Gfx **dList, Mtx **mtx, s32 viewportID) {
             transform.x_position = spE0->originX;
             transform.y_position = spE0->originY;
             transform.z_position = spE0->originZ;
-            sp104 = D_800E30D4[spE0->unkC];
+            sp104 = WAVE_TILE_FLAGS(spE0->unkC);
             if (gWaveController.doubleDensity) {
                 for (sp11C = 0; sp11C < 2; sp11C++) {
                     transform.x_position = spE0->originX;
