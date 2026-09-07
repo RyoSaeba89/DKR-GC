@@ -95,6 +95,14 @@ void gc_crash_log_recoveries(void);
  * water is simply not drawn -- so the heartbeat has to say them. */
 extern u32 gGcWaveBlockSkips;
 extern u32 gGcWaveTileBad;
+extern u32 gGcWaveRenders;
+extern u32 gGcWaveTilesDrawn;
+extern s32 gGcWaveVisMax;
+extern s32 gGcWaveLastBad;
+extern s32 gGcWaveLastSegs;
+extern s32 gGcWaveLastVis;
+extern u32 gGcWaveLastModel;
+extern const char *gGcWaveLastFrom;
 
 /* Truncate the log and note which path took it. Call once, after the FAT
  * volume is mounted and before anything worth logging happens. */

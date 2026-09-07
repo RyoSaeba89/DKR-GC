@@ -577,11 +577,26 @@ void gc_logfile_mark(const char *fmt, ...);
 static s32 gc_wave_tile_reports = 0;
 static s32 gc_wave_block_reports = 0;
 
-/* Running totals for the heartbeat. Eight marks say a guard fired; these say
- * whether it fires once or sixty times a second, which is the difference
- * between a blemish and the water not being drawn. */
+/*
+ * What the heartbeat says about the water, and why it is not eight marks.
+ *
+ * gc_logfile_mark writes eight lines and stops, and the log body is a ring:
+ * on 2026-09-07 the counter said 1963 tiles skipped and every one of the marks
+ * that would have explained them had been overwritten by the beats that came
+ * after. A number that only exists at the start of a session cannot be read at
+ * the end of one. So the detail lives here, is overwritten in place, and is
+ * printed by every beat.
+ */
 u32 gGcWaveBlockSkips = 0;
 u32 gGcWaveTileBad = 0;
+u32 gGcWaveRenders = 0;    /* waves_render calls this beat */
+u32 gGcWaveTilesDrawn = 0; /* tiles it actually drew */
+s32 gGcWaveVisMax = 0;     /* the largest gVisibleWaveTiles seen this beat */
+s32 gGcWaveLastBad = 0;    /* and the last id that was refused, with its context */
+s32 gGcWaveLastSegs = 0;
+s32 gGcWaveLastVis = 0;
+u32 gGcWaveLastModel = 0;
+const char *gGcWaveLastFrom = "-";
 
 static s32 gc_wave_tile_flags(u32 unkC) {
     s32 count = gWaveTileCountX * gWaveTileCountZ;
@@ -604,6 +619,11 @@ static s32 gc_wave_block_ok(s32 index, const char *from) {
         return TRUE;
     }
     gGcWaveBlockSkips++;
+    gGcWaveLastBad = index;
+    gGcWaveLastSegs = gNumberOfLevelSegments;
+    gGcWaveLastVis = gVisibleWaveTiles;
+    gGcWaveLastModel = (u32) gWaveModel;
+    gGcWaveLastFrom = from;
     if (gc_wave_block_reports < 8) {
         gc_wave_block_reports++;
         gc_logfile_mark("\nwaves: block %d of %d from %s (model %08x, vis %d)", index,
@@ -1095,6 +1115,12 @@ void waves_render(Gfx **dList, Mtx **mtx, s32 viewportID) {
         viewportID = 2;
     }
 
+#ifdef TARGET_GC
+    gGcWaveRenders++;
+    if (gVisibleWaveTiles > gGcWaveVisMax) {
+        gGcWaveVisMax = gVisibleWaveTiles;
+    }
+#endif
     if (gVisibleWaveTiles > 0) {
         gWaveDL = *dList;
         gWaveMtx = *mtx;
@@ -1152,6 +1178,7 @@ void waves_render(Gfx **dList, Mtx **mtx, s32 viewportID) {
             if (!gc_wave_block_ok(gWaveBlockIDs[i], "draw")) {
                 continue;
             }
+            gGcWaveTilesDrawn++;
 #endif
             if (gWaveController.xlu) {
                 func_800B92F4(gWaveBlockIDs[i], viewportID);

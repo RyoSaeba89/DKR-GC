@@ -264,10 +264,17 @@ static void gc_heartbeat(u32 ticks) {
     gc_log("\n           n64 io: %u reads, %u writes, %u unknown (last %08x) | asserts %u",
            (unsigned) gGcIoReads, (unsigned) gGcIoWrites, (unsigned) gGcIoUnknown,
            (unsigned) gGcIoLastUnknown, (unsigned) gGcAsserts);
-    if (gGcWaveBlockSkips != 0 || gGcWaveTileBad != 0) {
-        gc_log("\n           waves skipped: %u stale ids, %u bad unkC", (unsigned) gGcWaveBlockSkips,
+    if (gGcWaveRenders != 0 || gGcWaveBlockSkips != 0) {
+        gc_log("\n           waves: %u renders, %u tiles drawn, vis max %d | skipped %u"
+               " (last id %d of %d from %s, model %08x, vis %d) | bad unkC %u",
+               (unsigned) gGcWaveRenders, (unsigned) gGcWaveTilesDrawn, (int) gGcWaveVisMax,
+               (unsigned) gGcWaveBlockSkips, (int) gGcWaveLastBad, (int) gGcWaveLastSegs,
+               gGcWaveLastFrom, (unsigned) gGcWaveLastModel, (int) gGcWaveLastVis,
                (unsigned) gGcWaveTileBad);
     }
+    gGcWaveRenders = 0;
+    gGcWaveTilesDrawn = 0;
+    gGcWaveVisMax = 0;
     gc_crash_log_recoveries();
     gc_log("\n           aram reads %u, slow %u, contended %u",
            (unsigned) gGcAssetReads, (unsigned) gGcAssetSlow,
