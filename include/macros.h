@@ -85,4 +85,26 @@
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
 #define MAX(a, b) ((a) > (b) ? (a) : (b))
 
+/*
+ * A left shift the way MIPS does one.
+ *
+ * `sllv` takes the count from the low five bits of the register, so `1 << 32`
+ * is `1 << 0` on the N64 -- and the game leans on that. objects.c writes
+ * `tajFlags |= 1 << (j + 31)` with j in 1..3 to set bits 0..2, and game.c does
+ * the same to remember which world-key cutscene has played.
+ *
+ * PowerPC's `slw` reads six bits of the count and produces *zero* for anything
+ * from 32 up. So on the GameCube those flags were never set: Taj kept offering
+ * a challenge already won, and the key cutscene played every time the hub was
+ * entered. Nothing was wrong with the save -- the bit never reached it.
+ *
+ * Only the GameCube build is changed. The N64 build must keep matching, and
+ * there the shift already behaves this way.
+ */
+#ifdef TARGET_GC
+#define MIPS_SHL(value, count) ((value) << ((count) & 31))
+#else
+#define MIPS_SHL(value, count) ((value) << (count))
+#endif
+
 #endif

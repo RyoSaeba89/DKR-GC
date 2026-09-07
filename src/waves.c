@@ -577,12 +577,19 @@ void gc_logfile_mark(const char *fmt, ...);
 static s32 gc_wave_tile_reports = 0;
 static s32 gc_wave_block_reports = 0;
 
+/* Running totals for the heartbeat. Eight marks say a guard fired; these say
+ * whether it fires once or sixty times a second, which is the difference
+ * between a blemish and the water not being drawn. */
+u32 gGcWaveBlockSkips = 0;
+u32 gGcWaveTileBad = 0;
+
 static s32 gc_wave_tile_flags(u32 unkC) {
     s32 count = gWaveTileCountX * gWaveTileCountZ;
 
     if (D_800E30D4 != NULL && unkC < (u32) count) {
         return D_800E30D4[unkC];
     }
+    gGcWaveTileBad++;
     if (gc_wave_tile_reports < 8) {
         gc_wave_tile_reports++;
         gc_logfile_mark("\nwaves: unkC %u of %d (tbl %08x, model %08x, segs %d, vis %d, grid %dx%d)", unkC,
@@ -592,14 +599,15 @@ static s32 gc_wave_tile_flags(u32 unkC) {
     return 0;
 }
 
-static s32 gc_wave_block_ok(s32 index) {
+static s32 gc_wave_block_ok(s32 index, const char *from) {
     if (gWaveModel != NULL && (u32) index < (u32) gNumberOfLevelSegments) {
         return TRUE;
     }
+    gGcWaveBlockSkips++;
     if (gc_wave_block_reports < 8) {
         gc_wave_block_reports++;
-        gc_logfile_mark("\nwaves: block %d of %d (model %08x, vis %d)", index, gNumberOfLevelSegments,
-                        (u32) gWaveModel, gVisibleWaveTiles);
+        gc_logfile_mark("\nwaves: block %d of %d from %s (model %08x, vis %d)", index,
+                        gNumberOfLevelSegments, from, (u32) gWaveModel, gVisibleWaveTiles);
     }
     return FALSE;
 }
@@ -620,7 +628,7 @@ s32 waves_block_hq(LevelModelSegment *block) {
     };
 #ifdef TARGET_GC
     /* Not found: the original reads one entry past gWaveModel here. */
-    if (!gc_wave_block_ok(indexNum)) {
+    if (!gc_wave_block_ok(indexNum, "hq")) {
         return FALSE;
     }
 #endif
@@ -1141,7 +1149,7 @@ void waves_render(Gfx **dList, Mtx **mtx, s32 viewportID) {
             /* The id was valid when waves_block_hq stored it; it need not be
              * still valid now, and a stale one indexes gWaveModel out of its
              * allocation. Skipping the tile costs a patch of water. */
-            if (!gc_wave_block_ok(gWaveBlockIDs[i])) {
+            if (!gc_wave_block_ok(gWaveBlockIDs[i], "draw")) {
                 continue;
             }
 #endif

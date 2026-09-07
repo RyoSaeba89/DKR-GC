@@ -89,6 +89,13 @@ void gc_crash_poll(void);
  * addr2line. Defined in gc_crash.c. */
 void gc_crash_log_recoveries(void);
 
+/* The wave guards' running totals, defined in src/waves.c under TARGET_GC: a
+ * tile skipped because its id no longer names a segment, and a tile whose unkC
+ * does not index the visibility table. Both are silent in the picture -- the
+ * water is simply not drawn -- so the heartbeat has to say them. */
+extern u32 gGcWaveBlockSkips;
+extern u32 gGcWaveTileBad;
+
 /* Truncate the log and note which path took it. Call once, after the FAT
  * volume is mounted and before anything worth logging happens. */
 void gc_logfile_init(void);

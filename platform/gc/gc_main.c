@@ -264,6 +264,10 @@ static void gc_heartbeat(u32 ticks) {
     gc_log("\n           n64 io: %u reads, %u writes, %u unknown (last %08x) | asserts %u",
            (unsigned) gGcIoReads, (unsigned) gGcIoWrites, (unsigned) gGcIoUnknown,
            (unsigned) gGcIoLastUnknown, (unsigned) gGcAsserts);
+    if (gGcWaveBlockSkips != 0 || gGcWaveTileBad != 0) {
+        gc_log("\n           waves skipped: %u stale ids, %u bad unkC", (unsigned) gGcWaveBlockSkips,
+               (unsigned) gGcWaveTileBad);
+    }
     gc_crash_log_recoveries();
     gc_log("\n           aram reads %u, slow %u, contended %u",
            (unsigned) gGcAssetReads, (unsigned) gGcAssetSlow,
