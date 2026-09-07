@@ -10,10 +10,14 @@ reimplemented against libogc2: libultra's scheduler, threads, message queues,
 PI DMA, VI, AI, controller, Controller Pak and EEPROM; the F3DDKR display-list
 interpreter on GX; and the N64 audio microcode's sixteen opcodes on the CPU.
 
-**Status: alpha 0.0.1.** It boots, draws and runs at the nominal frame rate on
-a real PAL console. Nothing is stubbed — the port handles every graphics and
-audio opcode the game emits. It is also not finished: see
-[Known issues](#known-issues).
+**Status: v0.4.0 — playable end to end on a real PAL console.** Adventure mode,
+races, challenges, bosses, the hub worlds, sound, saving and the menus all
+work. Nothing is stubbed: the port handles every graphics and audio opcode the
+game emits, and the heartbeat's `ignored:` and `aud-ign:` lines are empty.
+
+Testing is on hardware only, from an SD card. Every defect this port has had
+that mattered was invisible under an emulator, so a passing emulator run is not
+evidence here. See [Known issues](#known-issues) for what is open.
 
 ---
 
@@ -53,12 +57,14 @@ run on hardware.
 
 ### The log
 
-The port writes everything it knows to `sd:/dkr/dkr.log` — a heartbeat every
-60 retraces with frame timing, display-list coverage, audio counters, the ARAM
-read path, and the game thread's blocking point. If it crashes, the register
-dump and a stack trace go to `sd:/dkr/dkr.crash` and are shown on screen at the
-next boot. That log is the whole debugging story of this port; attach it to any
-issue.
+The port writes what it knows to `sd:/dkr/dkr.log`. Every build records boot
+breadcrumbs there; a `GC_DEBUG=1` build adds a heartbeat every 60 retraces with
+frame timing, display-list coverage, audio counters, collision-candidate
+occupancy, the ARAM read path, and the game thread's blocking point. If it
+crashes, the registers and a stack trace are drawn on screen, written to
+`sd:/dkr/dkr.crash`, and shown again at the next boot. That log is the whole
+debugging story of this port; attach it to any issue, and say which build it
+came from — the release binary carries no heartbeat.
 
 ---
 
@@ -81,7 +87,7 @@ Knobs worth knowing (all `make -f Makefile.gc VAR=value`):
 | | |
 |---|---|
 | `GC_EMBED_ASSETS` | `1` links the asset image into the `.dol` (12 MB bigger). **Release builds use `0`** — a `1` build contains the ROM and must never be redistributed. |
-| `GC_DEBUG` | `1` turns on the port's tracing and the heartbeat. On in the release build; it is what makes the log useful. |
+| `GC_DEBUG` | `1` turns on the port's tracing and the once-a-second heartbeat. Default `0`, and the published release binary is a `0` build — so a card build made for diagnosis has to say `GC_DEBUG=1` explicitly. The two are told apart by size: about 1.44 MB against 1.42 MB. |
 | `GC_MAIN_POOL_MB` | the game's heap, in MB. Default 4. |
 | `GC_AUDIO_FX` | let the game enable its reverb. Default 1. |
 | `GC_MEMCARD` | `0` disables the whole storage subsystem — no probing, no mounting, EEPROM in RAM. |
@@ -90,7 +96,7 @@ Knobs worth knowing (all `make -f Makefile.gc VAR=value`):
 
 ## How it works
 
-[`PORTING.md`](PORTING.md) is the full dossier — around 2 500 lines, a dated
+[`PORTING.md`](PORTING.md) is the full dossier — over 4 000 lines, a dated
 section per finding, written as the port was made. The short version:
 
 - **`platform/gc/ultra/`** reimplements libultra on libogc2. The scheduler is
@@ -112,29 +118,36 @@ the port drops.
 
 ## Known issues
 
-All of these are reported from console and none is solved. `PORTING.md`'s
-"Where this stands" section carries what has been eliminated for each, which is
-the useful half.
+**Fixed but not yet confirmed on console** (both found by reading, both with a
+mechanism that is written out in full in [`PORTING.md`](PORTING.md)):
 
-- **The audio crackles.** Two causes found and fixed, neither yet judged by
-  ear: the resampler assumed 22050 Hz where the game supplies 22000, draining
-  the output ring (dropouts now measure zero for a whole run); and linear
-  interpolation left resampling images only 7 dB down at 9 kHz, replaced with a
-  32-tap windowed sinc at −38 dB. Latency is 64 ms.
-- **Menu text and the title logo do not appear, and 2D sprites are wrong** — the balloons, the
-  in-race banana count, the HUD, and a card labelled "1" behind each character
-  on the selection screen. All of these live on the same texrect and sprite
-  path, and the texture counters are clean, so they are very likely one defect.
-- **Character shadows flicker**, against a ground that reads as a flat pale
-  surface.
-- **A rare freeze after several presses of START** in the menus, not yet
-  reproducible.
-- **One asset did not decompress.** Not seen since `osInvalDCache` stopped
-  discarding a neighbour's cache lines. All 3350 compressed assets in the ROM
-  were verified offline against the port's container, so it cannot be the
-  format.
+- **A boss greeted the player with his own defeat speech.** `8 << (worldId +
+  31)` in `level_load` — MIPS masks a shift count to five bits and PowerPC
+  gives zero, so a cutscene flag never latched and the boss intro level, which
+  is typed as a hubworld, had its dialogue channel overwritten with the "you
+  lost" one.
+- **Falling through the floor on the Tricky spiral.** One line of
+  `compute_grid_overlap_mask` disagrees with the handwritten assembly it was
+  transcribed from, making the collision grid mask eight times too permissive
+  in Z; the candidate list then hit its 500-entry cap and dropped the floor
+  before it was tested. `GC_DEBUG` builds now print a `collide:` line saying
+  whether that cap is still being reached.
+
+**Open, with no reproduction:**
+
 - Time Trial ghosts save to the emulated Controller Pak, but the full
   save-power-off-reload path has never been walked end to end.
+- `src/hasm/obj_animate.c`, `obj_shade_fast.c` and `math_util.c` are C
+  reimplementations of handwritten assembly that only ever compile off the N64,
+  so no N64 build has executed them. `collision.c`, the fourth, has now been
+  diffed against its `.s` and had a bug; the other three have not been checked.
+
+Everything the port has been reported to get wrong before this is fixed and
+confirmed on hardware: the audio crackle, the crash when a new part of the
+island streams in, an alignment exception during a race on water, flickering
+and missing water, Taj re-offering a challenge already won, the world-key
+cutscene replaying, missing menu text and title logo, wrong 2D sprites,
+flickering shadows, and an asset that failed to decompress.
 
 ## Credits
 

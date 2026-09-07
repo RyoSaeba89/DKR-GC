@@ -9,32 +9,240 @@ what is left.
 
 ---
 
-## WHAT IS LEFT -- read this first (2026-09-07)
+## WHAT IS LEFT -- read this first (2026-09-07, late)
 
-**No open defect. Released as `v0.4.0`.**
+**Two defects fixed and on the card, neither yet confirmed on console.**
+`dkr.dol` md5 `e33bce9e59fb91163d11cee7f8a58c57` (`GC_DEBUG=1`, 1 441 984
+bytes), `dkr-rel.dol` md5 `657881ecfc53096528b93801041cfedd` (`GC_DEBUG=0`,
+1 415 744 bytes). Both `GC_EMBED_ASSETS=0`. The card is drive **F:** now, not
+D:.
 
-Everything the user has reported is fixed and confirmed on real PAL hardware:
-the audio crackle, the crash when a new part of the island streams in, the
-alignment exception during a race on water, the flickering water, Taj offering
-a challenge already won, the world-key cutscene replaying, and the artefacts
-down the right of the menu labels and the title logo. Text, the title logo,
-the HUD, 2D sprites, lighting, frame pacing, saving and sound are all correct
-on the console.
+1. **Tricky greeted the player with his own defeat speech.** A third
+   `<< (x + 31)`, missed by the first grep because the shift count was
+   `settings->worldId` and the pattern only matched a bare identifier. See
+   "The boss opened with the losing dialogue" below.
+2. **The collision candidate list was over-filled and truncated.** One line of
+   `compute_grid_overlap_mask` in `src/hasm/collision.c` disagrees with the
+   handwritten assembly beside it in `src/hasm/collision.s`. See "Driving
+   through the floor" below.
 
-The day's five defects and the one rule behind four of them are in "What the
-port learned on 2026-09-07" below; read that before touching anything, because
-it is the shape most of what is left will take.
+Before them, everything the user had reported was fixed and confirmed on real
+PAL hardware: the audio crackle, the crash when a new part of the island
+streams in, the alignment exception during a race on water, the flickering
+water, Taj offering a challenge already won, the world-key cutscene replaying,
+and the artefacts down the right of the menu labels and the title logo. Text,
+the title logo, the HUD, 2D sprites, lighting, frame pacing, saving and sound
+are all correct on the console.
+
+**Read "What the port learned on 2026-09-07" below before touching anything**;
+between them, that section and the two above are the shape most of what is
+left will take.
 
 **Where to look next, in the absence of a report:**
+- The `collide:` line in the heartbeat, which is new. `full` non-zero means
+  the port threw geometry away before testing it, and the fall through the
+  floor is not fully fixed; `cand max` well under 500 means it is.
 - `dsi rec` in the heartbeat. A blank there is the port's own claim that
   nothing it exercised indexed outside RAM. Its blind spot is an index that
   lands *inside* MEM1, which takes no exception at all -- guard patterns
   around the pool and the texture cache would catch those, and are not built.
+- The rest of `src/hasm/`. `collision.c`, `obj_animate.c`, `obj_shade_fast.c`
+  and `math_util.c` are C reimplementations of handwritten assembly, compiled
+  only off the N64, so **no N64 build has ever executed a line of them**. One
+  of the four has now been diffed against its `.s` and one bug came out.
+  The other three have not.
 - The `grep` for shifts that can exceed 31 (see `MIPS_SHL`), re-run after any
-  update from the decompilation upstream.
+  update from the decompilation upstream -- and use the widened pattern below,
+  not the original one.
 - Loops whose sentinel lies past the end of the array they index, and any
   `[-1]`. Two of those turned up in `waves.c` alone, and `nm -n` on the ELF is
   the only way to see them.
+
+---
+
+## The boss opened with the losing dialogue (2026-09-07, fixed)
+
+The user: *"le boss (triceratops) du premier monde commence avec le dialogue de
+défaite. ça doit être du même ordre que le bug de taj l'éléphant."* They were
+right about the family, and the diagnosis cost no hardware run at all.
+
+### The line
+
+`src/game.c`, in `level_load`:
+
+```c
+if (gCurrentLevelHeader->race_type == RACETYPE_HUBWORLD) {
+    if (settings->worldId - 1 >= 0) {
+        var_s0 = 8 << (settings->worldId + 31);      /* zero on PowerPC */
+        ...
+            if (settings->balloonsPtr[settings->worldId] >= 4) {
+                if (!(settings->cutsceneFlags & var_s0)) {
+                    settings->cutsceneFlags |= var_s0;
+                    cutsceneId = CUTSCENE_ID_UNK_5;
+                }
+            }
+            var_s0 <<= 5;
+            ...
+```
+
+MIPS takes a shift count from its low five bits, so `8 << 32` is `8 << 0`: the
+expression is `8 << (worldId - 1)`, and the flag names in `structs.h` confirm
+it exactly -- `CUTSCENE_DINO_DOMAIN_BOSS` is `0x8`, Sherbet `0x10`, Snowflake
+`0x20`, Dragon `0x40`, and `var_s0 <<= 5` walks the matching `*_BOSS_2` set at
+`0x100`..`0x800`. PowerPC's `slw` produces **zero** for any count from 32 up,
+so `var_s0` was 0, `!(cutsceneFlags & 0)` was always true, the `|=` wrote
+nothing, and `cutsceneId` was overwritten with `CUTSCENE_ID_UNK_5` on **every**
+load of a `RACETYPE_HUBWORLD` level once the world held four balloons.
+
+### Why that reaches a boss race, which is the part worth keeping
+
+It reaches it because **the boss intro is a hubworld**. That was not a guess;
+it was read out of the ROM on this machine, offline, in one script:
+
+- `ASSET_MISC_67` is a table of `(bossRaceLevel, bossCutsceneLevel)` pairs.
+  Its twenty bytes are `26 39 2E 39 28 3D 35 3D 01 3B 34 3B 29 3A 36 3A 25 3C
+  37 3E` -- so level 38 ("TrickyTops 1") and level 46 ("TrickyTops 2") both
+  load level 57 first.
+- Level 57 is named "TrickyTops Anim 1", its `world` is `-1`, and its
+  `race_type` is **5**, which is `RACETYPE_HUBWORLD`.
+
+So `level_load` picks `CUTSCENE_ID_UNK_3` for a first meeting and
+`CUTSCENE_ID_UNK_7` for a rematch, and then the hubworld block below
+overwrites it with 5. Channel 5 in that level is precisely what
+`racer_boss_finish` plays when the **player** loses (`level_properties_push(i,
+5, -1, 5)`), against 4 for a win. Tricky opened the first world with the speech
+he gives after beating you.
+
+The gate is `balloonsPtr[worldId] >= 4`, and four balloons is exactly what the
+boss door demands, so the defect could not appear before the boss and could not
+fail to appear at it.
+
+The fix is `MIPS_SHL(8, settings->worldId + 31)`. Saves heal themselves: the
+first hub entry after the fix plays the four-balloon cutscene once, latches the
+flag, and the boss is correct from then on.
+
+### The grep was too narrow, and this is the corrected one
+
+The pattern written on 2026-09-07 was
+
+    grep -rnE "<<[ ]*\(?[a-zA-Z_]+[ ]*\+[ ]*(3[0-9]|[4-9][0-9])" src/*.c
+
+and it found `1 << (j + 31)` and `CUTSCENE_DINO_DOMAIN_KEY << (var_s0 + 31)`
+and missed this one, because `[a-zA-Z_]+` does not match `settings->worldId`.
+Use:
+
+    grep -rnE "<<[[:space:]]*\(?[^;,)]*\+[[:space:]]*(3[0-9]|[4-9][0-9])" \
+        src/ include/ --include=*.c --include=*.h
+
+That returns `game.c:512` and the `MIPS_SHL` comment in `macros.h`, and
+nothing else. **A grep that finds two of three is a grep that closes an
+investigation early**; the fix for the class is only as good as the pattern
+that enumerates it.
+
+Right shifts were checked too and are clean. `settings->worldId` is a `u8`, so
+`worldId - 1` is `-1` in the central area and `trophies >> -2` reads 30 bits on
+MIPS and gives zero on PowerPC -- but `trophies` is a `u16`, so both are zero.
+`objects.c:2007` and `object_functions.c:604` are the two sites; neither needs
+a change.
+
+---
+
+## Driving through the floor: the transcription that never ran on the N64
+(2026-09-07, fixed)
+
+The user: *"je suis passé à travers le sol lors de la course [...] c'est la
+course du boss en spirale."* Level 38's header says `course_height 5000.0` and
+one lap -- the tallest track in the game, and the one that stacks the most
+geometry over the same X/Z.
+
+### Where the port's own code is, and why it is unverified by construction
+
+`src/hasm/collision.c` holds C reimplementations of three handwritten assembly
+functions -- `generate_collision_candidates`, `compute_grid_overlap_mask` and
+`resolve_collisions`. Each is wrapped in `#ifdef NON_MATCHING`, with
+`GLOBAL_ASM("asm/collision/*.s")` on the other branch. The N64 build takes the
+assembly. **The GameCube build is the only thing that has ever run the C**, so
+nothing about DKR working on hardware says a word about whether it is right.
+
+The assembly is in the repository, in `src/hasm/collision.s`. Diffing the three
+functions against it line by line took an afternoon and found one difference.
+
+### The difference
+
+`compute_grid_overlap_mask` divides a segment's bounding box into an 8x8 grid
+and returns which columns and rows a query rectangle touches -- X in the low
+byte, Z in the high byte. The X half reads:
+
+```c
+if (cell_x + cell_width >= x1 && x2 >= cell_x) { mask |= v1; }
+```
+
+and the Z half read:
+
+```c
+if (cell_z + cell_height >= z1 && z2 >= bbox_z1) { mask |= v1; }   /* wrong */
+```
+
+The assembly keeps the running cell edge in `$t0` for both halves:
+
+```
+    or   $t0, $t1, $zero      # cell_z = bbox_z1
+  .L800315C8:
+    slt  $at, $t4, $a2        # cell_z + cell_height < z1 ?
+    slt  $at, $t5, $t0        # z2 < cell_z ?
+    add  $t0, $t0, $t2        # cell_z += cell_height
+```
+
+The transcription read `$t0` as its initial value rather than as the loop
+variable. `z2` has just been clamped into `[bbox_z1, bbox_z2]`, so
+`z2 >= bbox_z1` is *always* true and every row from the one holding `z1` to row
+7 got a bit -- up to eight rows where one or two were meant.
+
+### Why that is a fall through the floor and not just wasted work
+
+The mask is only used to *accept* triangles, so an over-inclusive mask cannot
+reject a real one. What it does is fill the list:
+
+```c
+gCollisionCandidates[j] = (s32) facet;
+gCollisionSurfaces[j] = surface;
+j++;
+if (j == MAX_COLLISION_CANDIDATES) {   /* 500 */
+    goto out;
+}
+```
+
+`generate_collision_candidates` walks up to ten segments in order and stops
+dead at five hundred candidates. Everything after that point -- including whole
+segments, including their `collisionPlanes` base pointer -- is never handed to
+`resolve_collisions`, which therefore finds nothing to push the racer off. Feed
+it eight times the triangles it needs and it truncates in ordinary play; on a
+spiral, where several stacked segments qualify on X/Z alone, it truncates
+early.
+
+`resolve_collisions` and `generate_collision_candidates` were diffed against
+the assembly in full and are faithful. Two harmless differences are worth
+recording so nobody re-derives them:
+
+- The asm masks a segment pointer with `& 0x7FFFFFFF` where the C uses
+  `K0_TO_PHYS` (`& 0x1FFFFFFF`), tagging it so `>= 0` distinguishes it from a
+  facet. Both round-trip through `PHYS_TO_K0` for every address in MEM1, so
+  the GameCube is safe either way. It is the same KSEG0 assumption that has
+  bitten this port twice elsewhere -- here it happens to hold.
+- The asm rejects an edge test with `dist > 4.0`, the C with `dist >= 4.0`.
+  A single float value apart, and not reachable in practice.
+
+### The instrument that says whether the fix was enough
+
+`GC_DEBUG` builds now print, once per beat:
+
+    collide: N calls, cand max M/500 full F | segs max S/10 full G
+
+`full` is the counter that matters. **`full 0` is the claim that no collision
+test this session was truncated**; anything else means geometry was thrown away
+before it was tested, and the fall through the floor is not finished. `segs
+full` is the second cap, ten segments, and it is in the original too -- if that
+one is what fires, the fix is a different one.
 
 ---
 
@@ -753,6 +961,11 @@ Two other header frictions, settled:
 ---
 
 ## Status
+
+> This section is a dated record of the eighth and ninth console sessions
+> (2026-09-04) and is kept for the measurements in it. Everything it lists as
+> still wrong was fixed later. **"WHAT IS LEFT" at the top of this file is the
+> current state.**
 
 **On real hardware (a PAL console), as of 2026-09-04: it boots, it draws, and
 it runs at the nominal rate.** Eight console sessions, each documented below
