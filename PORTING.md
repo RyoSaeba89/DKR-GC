@@ -252,6 +252,39 @@ between line 535 (23 100 retraces, the last beat) and line 635 (21 360).
    all-white 64x32 RGBA16 asset exists at all. If none does, the `0xFF`
    buffers cannot have come from the image and the wild store is proven.
 
+### Step 1, done (2026-09-07, `9de69065`) — awaiting the run
+
+The handler no longer lets its own second exception erase the first one.
+Three changes, all of them ordering:
+
+- **The whole report is written with `MSR[EE]` still clear.** It was always
+  polled work: `gc_logfile_write` appends to a RAM ring and takes no lock in
+  crash mode, `write(1, ...)` reaches libogc's framebuffer console with a
+  memcpy. Only the flush and the `dkr.crash` record need interrupts, and that
+  window is now those two calls and nothing else.
+- **The first fault's `frame_context` is kept whole in BSS**, and a second
+  exception hands *that* to libogc's dump instead of its own. Disassembling
+  `exception.o` settled that this works: every register the dump prints is
+  read out of the frame it is given (`r31` throughout), and only `DAR`/`DSISR`
+  come from the SPRs — which in this exact case are stale, and stale is
+  correct, because an external interrupt writes neither.
+- **`crash_hex` and `crash_dec` reach the console too.** They wrote to the log
+  only, so the console half of a report read `*** exception  (DSI (bad data
+  address)) at  ***`: every word of it, and not one address. The screen was
+  never a channel for the numbers until now.
+
+`MSR[FP]` is set on entry rather than alongside `EE`, so the frame copy cannot
+take the floating-point-unavailable fault that cost four hardware runs in
+September. Verified in the built ELF: `mfmsr; ori 0x2000; mtmsr` is the first
+thing the function does, and the copy is an integer `lwz`/`stw` loop of 90
+iterations (720 bytes, no `lfd`).
+
+**What the next run should show:** the same crash, and a register page whose
+`SRR0` is now the faulting store rather than `80007030`. `addr2line` it against
+the ELF the run was built from. If a second exception still happens, the page
+is preceded in the log by `*** second exception N (...) at ...`, and the page
+itself is still the first fault.
+
 ---
 
 
