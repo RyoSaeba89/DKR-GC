@@ -19,6 +19,24 @@ extern s32 *gCollisionCandidates;
 extern s8 *gCollisionSurfaces;
 extern s32 gNumCollisionCandidates;
 
+#ifdef TARGET_GC
+/*
+ * The two caps in generate_collision_candidates, made visible.
+ *
+ * Both of them lose geometry in silence: ten segments and five hundred
+ * candidates, and when either fills, whatever came after it is simply not
+ * tested for collision that frame. On a track that stacks its floor over itself
+ * -- the Tricky spiral is the extreme case -- that reads on screen as driving
+ * through the ground, with nothing in the log to say so. `full` is the counter
+ * that matters; `max` says how much headroom there was when it did not fill.
+ */
+u32 gGcColCandCalls = 0;
+u32 gGcColCandMax = 0;
+u32 gGcColCandFull = 0;
+u32 gGcColSegMax = 0;
+u32 gGcColSegFull = 0;
+#endif
+
 // All handwritten assembly, below.
 
 #ifdef NON_MATCHING
@@ -112,6 +130,9 @@ s32 generate_collision_candidates(s32 numPoints, Vec3f *origins, Vec3f *targets,
             segments[counter] = &gCurrentLevelModel->segments[i];
             counter++;
             if (counter == 10) {
+#ifdef TARGET_GC
+                gGcColSegFull++;
+#endif
                 break;
             }
         }
@@ -168,6 +189,9 @@ s32 generate_collision_candidates(s32 numPoints, Vec3f *origins, Vec3f *targets,
                 j++;
 
                 if (j == MAX_COLLISION_CANDIDATES) {
+#ifdef TARGET_GC
+                    gGcColCandFull++;
+#endif
                     goto out;
                 }
             }
@@ -175,6 +199,15 @@ s32 generate_collision_candidates(s32 numPoints, Vec3f *origins, Vec3f *targets,
     }
 
 out:
+#ifdef TARGET_GC
+    gGcColCandCalls++;
+    if ((u32) j > gGcColCandMax) {
+        gGcColCandMax = j;
+    }
+    if ((u32) counter > gGcColSegMax) {
+        gGcColSegMax = counter;
+    }
+#endif
     gNumCollisionCandidates = j;
     return 0;
 }
@@ -259,7 +292,31 @@ s32 compute_grid_overlap_mask(LevelModelSegmentBoundingBox *bbox, s32 x1, s32 z1
     cell_z = bbox_z1;
 
     for (i = 0; i < 8; i++) {
-        if (cell_z + cell_height >= z1 && z2 >= bbox_z1) {
+        /*
+         * `z2 >= cell_z`, not `z2 >= bbox_z1`.
+         *
+         * The handwritten original is in this repository, in collision.s, and it
+         * keeps the running cell edge in $t0 for both halves:
+         *
+         *     or   $t0, $t1, $zero      # cell_z = bbox_z1
+         *   .L800315C8:
+         *     slt  $at, $t4, $a2        # cell_z + cell_height < z1 ?
+         *     slt  $at, $t5, $t0        # z2 < cell_z ?
+         *     add  $t0, $t0, $t2        # cell_z += cell_height
+         *
+         * The transcription read $t0 as its initial value instead of as the loop
+         * variable, and bbox_z1 is what z2 was just clamped against, so the test
+         * was always true: every row from the one holding z1 to row 7 got a bit.
+         * The X half above is written correctly, which is what the asymmetry
+         * betrays.
+         *
+         * The mask is only ever used to accept triangles, so the damage is an
+         * over-full candidate list rather than a wrong one -- and
+         * generate_collision_candidates stops dead at MAX_COLLISION_CANDIDATES,
+         * dropping whole segments off the end of it. Somewhere in a stack of
+         * geometry that is how a racer drives through the floor.
+         */
+        if (cell_z + cell_height >= z1 && z2 >= cell_z) {
             mask |= v1;
         }
 

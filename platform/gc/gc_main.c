@@ -275,6 +275,20 @@ static void gc_heartbeat(u32 ticks) {
     gGcWaveRenders = 0;
     gGcWaveTilesDrawn = 0;
     gGcWaveVisMax = 0;
+    /* Collision candidates. `full` non-zero is the port saying it threw away
+     * geometry before testing it -- the shape a fall through the floor takes
+     * from in here. */
+    if (gGcColCandCalls != 0) {
+        gc_log("\n           collide: %u calls, cand max %u/%u full %u | segs max %u/10 full %u",
+               (unsigned) gGcColCandCalls, (unsigned) gGcColCandMax, 500u,
+               (unsigned) gGcColCandFull, (unsigned) gGcColSegMax,
+               (unsigned) gGcColSegFull);
+    }
+    gGcColCandCalls = 0;
+    gGcColCandMax = 0;
+    gGcColCandFull = 0;
+    gGcColSegMax = 0;
+    gGcColSegFull = 0;
     gc_crash_log_recoveries();
     gc_log("\n           aram reads %u, slow %u, contended %u",
            (unsigned) gGcAssetReads, (unsigned) gGcAssetSlow,

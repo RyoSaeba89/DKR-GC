@@ -104,6 +104,16 @@ extern s32 gGcWaveLastVis;
 extern u32 gGcWaveLastModel;
 extern const char *gGcWaveLastFrom;
 
+/* The collision candidate caps, defined in src/hasm/collision.c under
+ * TARGET_GC. `full` counts the frames where a cap truncated the list, which is
+ * a floor triangle silently not tested; `max` is the high-water mark when it
+ * did not. */
+extern u32 gGcColCandCalls;
+extern u32 gGcColCandMax;
+extern u32 gGcColCandFull;
+extern u32 gGcColSegMax;
+extern u32 gGcColSegFull;
+
 /* Truncate the log and note which path took it. Call once, after the FAT
  * volume is mounted and before anything worth logging happens. */
 void gc_logfile_init(void);
