@@ -121,11 +121,12 @@ the port drops.
 **Fixed but not yet confirmed on console** (both found by reading, both with a
 mechanism that is written out in full in [`PORTING.md`](PORTING.md)):
 
-- **A boss greeted the player with his own defeat speech.** `8 << (worldId +
-  31)` in `level_load` — MIPS masks a shift count to five bits and PowerPC
-  gives zero, so a cutscene flag never latched and the boss intro level, which
-  is typed as a hubworld, had its dialogue channel overwritten with the "you
-  lost" one.
+- **Every boss but Wizpig 1 greeted the player with his own defeat speech**,
+  and the same line suppressed the four- and eight-balloon cutscenes in five
+  hub worlds. `8 << (worldId + 31)` in `level_load` — MIPS masks a shift count
+  to five bits and PowerPC gives zero, so a cutscene flag never latched and
+  every level typed as a hubworld had its dialogue channel overwritten with the
+  "you lost" one. All six boss intro levels are typed that way.
 - **Falling through the floor on the Tricky spiral.** One line of
   `compute_grid_overlap_mask` disagrees with the handwritten assembly it was
   transcribed from, making the collision grid mask eight times too permissive
@@ -133,8 +134,13 @@ mechanism that is written out in full in [`PORTING.md`](PORTING.md)):
   before it was tested. `GC_DEBUG` builds now print a `collide:` line saying
   whether that cap is still being reached.
 
-**Open, with no reproduction:**
+**Open:**
 
+- **The intro does not play on a new game.** No defect found by reading: the
+  path is data-driven, the cinematic cannot be skipped by input, and the
+  port's EEPROM emulation is sound. Three log marks now say which of the two
+  possible shapes it is — the branch not taken, or the sequence ending on its
+  first frame.
 - Time Trial ghosts save to the emulated Controller Pak, but the full
   save-power-off-reload path has never been walked end to end.
 - `src/hasm/obj_animate.c`, `obj_shade_fast.c` and `math_util.c` are C

@@ -12,15 +12,16 @@ what is left.
 ## WHAT IS LEFT -- read this first (2026-09-07, late)
 
 **Two defects fixed and on the card, neither yet confirmed on console.**
-`dkr.dol` md5 `e33bce9e59fb91163d11cee7f8a58c57` (`GC_DEBUG=1`, 1 441 984
-bytes), `dkr-rel.dol` md5 `657881ecfc53096528b93801041cfedd` (`GC_DEBUG=0`,
-1 415 744 bytes). Both `GC_EMBED_ASSETS=0`. The card is drive **F:** now, not
+`dkr.dol` md5 `ab7010bbe1f43f70ad883989321b6714` (`GC_DEBUG=1`, 1 442 816
+bytes), `dkr-rel.dol` md5 `9147e92dd3d877c73a2a891745c0a9f0` (`GC_DEBUG=0`,
+1 416 576 bytes). Both `GC_EMBED_ASSETS=0`. The card is drive **F:** now, not
 D:.
 
-1. **Tricky greeted the player with his own defeat speech.** A third
-   `<< (x + 31)`, missed by the first grep because the shift count was
-   `settings->worldId` and the pattern only matched a bare identifier. See
-   "The boss opened with the losing dialogue" below.
+1. **Every boss but Wizpig 1 greeted the player with his own defeat speech**,
+   and the same line broke five hub worlds and the Future Fun Land trophy
+   intro. A third `<< (x + 31)`, missed by the first grep because the shift
+   count was `settings->worldId` and the pattern only matched a bare
+   identifier. See "The boss opened with the losing dialogue" below.
 2. **The collision candidate list was over-filled and truncated.** One line of
    `compute_grid_overlap_mask` in `src/hasm/collision.c` disagrees with the
    handwritten assembly beside it in `src/hasm/collision.s`. See "Driving
@@ -120,6 +121,124 @@ fail to appear at it.
 The fix is `MIPS_SHL(8, settings->worldId + 31)`. Saves heal themselves: the
 first hub entry after the fix plays the four-balloon cutscene once, latches the
 flag, and the boss is correct from then on.
+
+### The blast radius, enumerated from the ROM
+
+The user asked whether the other bosses, Wizpig, the trophy races and the
+key-unlocked games had the same defect. **Sixteen levels are typed
+`RACETYPE_HUBWORLD`, and every one of them went through that block:**
+
+    0  world  0  Central Area          36  world -1  Sequence Area
+    2  world  4  Dragon Forest         42  world -1  WizPig Mouth Seq
+   12  world  1  Dino Domain           45  world -1  Rocket Sequence
+   14  world  2  Sherbet Island        51  world -1  Space Trophy
+   24  world  3  Snowflake Mountain    57  world -1  TrickyTops Anim 1
+   35  world  5  Future Fun Land       58  world -1  Dragon Boss Anim 1
+                                       59  world -1  Walrus Boss Anim 1
+                                       60  world -1  WizPig 1 Anim
+                                       61  world -1  Octo Anim
+                                       62  world -1  Wizspacenim
+
+**All six boss intro levels are hubworlds**, which is why one line could greet
+five different bosses with the wrong speech. Two gates decide which of the
+sixteen actually broke, and they are worth writing out because they are what
+makes the report specific:
+
+- the block needs `settings->worldId >= 1`, and a level whose `world` is `-1`
+  does not update `worldId`, so a boss intro inherits the hub the player came
+  from;
+- worlds 1-4 need `balloons[worldId] >= 4`; world 5 needs
+  `balloons[0] >= 47 && ttAmulet >= 4`.
+
+So:
+
+| | |
+|---|---|
+| **Broken** | Tricky, Bluey, Bubbler and Smokey — first fight *and* rematch; Wizpig 2; the Dino/Sherbet/Snowflake/Dragon hubs from 4 balloons; the Future Fun Land hub; the Future Fun Land trophy intro ("Space Trophy") |
+| **Not broken** | **Wizpig 1** — he is fought from the Central Area, where `worldId` is 0 and the block never runs; the four world trophy intros (levels 47-50, typed `CUTSCENE_1`); the new-game intro (balloons are 0); the lighthouse rocket |
+
+The hub half is worth stating on its own: because the `|=` wrote nothing, the
+four- and eight-balloon hub cutscenes **never latched and never played** — the
+game asked for cutscene 5 on every single entry instead, forever. After the fix
+each plays once and stops.
+
+### What else was audited, and found clean
+
+Everything the user named, checked site by site:
+
+- **The shift class is closed.** All 123 shifts in `src/` whose count is not a
+  literal were listed and inspected. Exactly one could exceed 31, and it is the
+  one above. The right shifts are clean too.
+- **The `cutsceneFlags` bit map is coherent**, which is independent evidence
+  that the MIPS reading is the right one: `8 << (worldId-1)` lands exactly on
+  `CUTSCENE_DINO_DOMAIN_BOSS` (0x8) through `CUTSCENE_FUTURE_FUN_LAND_BOSS`
+  (0x80), `<<= 5` lands exactly on the `*_BOSS_2` set (0x100..0x800), and
+  `CUTSCENE_DINO_DOMAIN_KEY << (world-1)` on the four `*_KEY` flags
+  (0x4000..0x20000). No two systems collide; 0x1000 is simply unused.
+- **`settings->bosses`** is consistent across all eight of its readers: bit
+  `worldId` for the first win, bit `worldId + 6` for the rematch, `0x820` as
+  the "Wizpig 2 and Future Fun Land" mask. No shift there can reach 32.
+- **The Taj challenge flags** agree between their three sites: `1 << (j+31)`
+  with j in 1..3 sets the *unlocked* bits 0..2, `1 << (challengeID+2)` with
+  challengeID in 1..3 and `1 << (vehicleID+3)` with vehicleID in 0..2 both
+  read the *completed* bits 3..5, which is what `TAJ_FLAGS_PLANE_CHAL_
+  COMPLETED = 0x20` says.
+- **The keys**: `1 << keyID` for the world key, `1 << world` for the challenge
+  door, `1 << (i+1)` in the tracks menu — one bit per world, bits 1..4, no
+  overflow.
+- **Silver coins**: `SILVER_COIN_COLLECTED << playerIndex` (0..3) and
+  `bosses | 0x820`; nothing platform-dependent.
+- **Time Trial unlocks**: `16 << trackIdCount` and `(1 << 4) << i` with i in
+  0..19 land inside the `0xFFFFF0` mask the code tests, and
+  `calculate_eeprom_settings_checksum` shifts a `u64` by up to 52, which
+  PowerPC does through `__lshrdi3` and gets right.
+- **The trophy rankings** are the object-order class, and upstream already
+  handles them: `gTrophyRankingsTitle` / `gTrophyRankingsRacers` are one array
+  under `AVOID_UB`, which this build defines. Same for `postrace_load`'s
+  `D_800E0A10`.
+
+---
+
+## The new-game intro: instrumented, not diagnosed (2026-09-07)
+
+The user reports the intro does not play on a new game. **I could not find a
+defect by reading, and the honest thing is to say so and ship the instrument
+rather than a plausible fix.**
+
+What is established, all of it offline:
+
+- The intro is sequence 0 of `ASSET_MISC_CINEMATIC_RACE`, whose twenty-two
+  bytes decode to `level 36, players 0, cutscene 15` followed by the `-1`
+  terminator. Level 36 is "Sequence Area".
+- It is reached from `menu_file_select_loop`, and only when
+  `settings->newGame` is true at the moment the file-select transition passes
+  35 frames.
+- `cinematic_start` is called with both skip flags zero, so **the intro cannot
+  be skipped by a button press**. It ends on one condition only:
+  `func_800214C4()` going non-zero, which is `D_8011AD22[1 - D_8011AD21]`, the
+  count of animation objects that reached an end marker in the previous
+  `obj_update`.
+- `level_load` does not mistreat it. `ZERO_PLAYERS` is `-1` and `ONE_PLAYER` is
+  `0`, so a `players 0` entry leaves `numPlayers == 0`, the race type is *not*
+  rewritten to `RACETYPE_CUTSCENE_1`, and level 36 stays a hubworld — but the
+  block that would then bite needs four balloons and a new game has none.
+- The port's EEPROM emulation is sound: `save_load` is `sLoaded`-guarded, so
+  nothing re-reads over a fresh erase, and every write goes straight to the
+  card.
+
+That leaves exactly two shapes, and they look identical from the sofa:
+
+1. the branch is never taken, because `settings->newGame` was already false;
+2. it is taken, and `func_800214C4()` is non-zero on the first frame, so the
+   sequence steps past its only entry and returns immediately.
+
+Three `gc_logfile_mark` lines separate them in one run — `cine: file select
+done, file N, newGame X`, `cine: start level L players P cutscene C`, and
+`cine: sequence ended after N frames`. They are `gc_logfile_mark`, so they
+appear in the release build too, which is what the reporting run was.
+
+---
+
 
 ### The grep was too narrow, and this is the corrected one
 

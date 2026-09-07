@@ -35,6 +35,29 @@
 #include "types.h"
 #include "video.h"
 
+#ifdef TARGET_GC
+/*
+ * The cinematic path, said out loud -- because reading it settled nothing.
+ *
+ * The user reports that the intro does not play on a new game. That intro is
+ * one entry of ASSET_MISC_CINEMATIC_RACE: level 36 "Sequence Area", one
+ * player, cutscene channel 15, and it ends when func_800214C4() -- an
+ * animation object in the level reaching its end marker -- goes non-zero. Two
+ * failures look identical from the sofa: the branch below is never taken
+ * (settings->newGame was FALSE by the time the file-select transition
+ * finished), or it is taken and the cutscene reports itself finished on the
+ * first frame, so the sequence advances past its only entry and returns.
+ *
+ * These three marks separate them in one run and cost nothing after it: the
+ * first is once per boot, and the other two fire once per cinematic. They are
+ * gc_logfile_mark, so they survive a release build, which is what the run that
+ * produced the report was.
+ */
+void gc_logfile_mark(const char *fmt, ...);
+static s32 gc_cine_reports = 0;
+static s32 sGcCineFrames = 0;
+#endif
+
 /**
  * @file Contains all the code used for every menu in the game.
  */
@@ -8133,6 +8156,18 @@ s32 menu_file_select_loop(s32 updateRate) {
         music_change_on();
         init_racer_headers();
         gTrophyRaceWorldId = 0;
+#ifdef TARGET_GC
+        {
+            /* Which side of the new-game branch this run took, once per boot.
+             * Everything after it depends on this one bit. */
+            static s8 sSaid;
+            if (!sSaid) {
+                sSaid = TRUE;
+                gc_logfile_mark("\ncine: file select done, file %d, newGame %d, adv2 %d", get_save_file_index(),
+                                settings->newGame, gIsInAdventureTwo);
+            }
+        }
+#endif
         if (settings->newGame) {
             if (gIsInAdventureTwo) {
                 settings->cutsceneFlags |= CUTSCENE_ADVENTURE_TWO;
@@ -12897,6 +12932,7 @@ void cinematic_start(s8 *params, s32 arg1, s32 endFlags, s32 skipFlagsA, s32 ski
     gCinematicPortraits = portraits;
 }
 
+
 /**
  * Load a new level and trigger a cutscene.
  */
@@ -12905,8 +12941,22 @@ void menu_cinematic_init(void) {
         menu_assetgroup_load(gCinematicObjectIndices);
         menu_racer_portraits();
     }
+#ifdef TARGET_GC
+    if (gc_cine_reports < 8) {
+        gc_cine_reports++;
+        gc_logfile_mark("\ncine: start level %d players %d cutscene %d (end %d, skip %d/%d, done %d)",
+                        gCinematicParams[CINEMATIC_LEVELID], gCinematicParams[CINEMATIC_PLAYERS],
+                        gCinematicParams[CINEMATIC_CUTSCENE], gCinematicEnd, gCinematicSkipA, gCinematicSkipB,
+                        func_800214C4());
+    }
+#endif
     load_level_for_menu(gCinematicParams[CINEMATIC_LEVELID], gCinematicParams[CINEMATIC_PLAYERS],
                         gCinematicParams[CINEMATIC_CUTSCENE]);
+#ifdef TARGET_GC
+    if (gc_cine_reports <= 8) {
+        gc_logfile_mark(" -> loaded, cutscene id %d, done %d", cutscene_id(), func_800214C4());
+    }
+#endif
     gMenuDelay = 0;
     gMenuStage = 0;
 }
@@ -12925,15 +12975,31 @@ s32 menu_cinematic_loop(UNUSED s32 updateRate) {
             buttonsPressed |= input_pressed(i);
         }
     }
+#ifdef TARGET_GC
+    sGcCineFrames++;
+#endif
     if (func_800214C4() != 0) {
         gCinematicParams += 3;
         if (gCinematicParams[CINEMATIC_LEVELID] > -1) {
+#ifdef TARGET_GC
+            if (gc_cine_reports <= 8) {
+                gc_logfile_mark("\ncine: next entry after %d frames -> level %d cutscene %d", sGcCineFrames,
+                                gCinematicParams[CINEMATIC_LEVELID], gCinematicParams[CINEMATIC_CUTSCENE]);
+            }
+            sGcCineFrames = 0;
+#endif
             load_level_for_menu(gCinematicParams[CINEMATIC_LEVELID], gCinematicParams[CINEMATIC_PLAYERS],
                                 gCinematicParams[CINEMATIC_CUTSCENE]);
         } else {
             if (gCinematicMusicChangeOff) {
                 music_change_off();
             }
+#ifdef TARGET_GC
+            if (gc_cine_reports <= 8) {
+                gc_logfile_mark("\ncine: sequence ended after %d frames, returning %d", sGcCineFrames, gCinematicEnd);
+            }
+            sGcCineFrames = 0;
+#endif
             cinematic_free();
             return gCinematicEnd;
         }
