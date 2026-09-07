@@ -9,16 +9,32 @@ what is left.
 
 ---
 
-## WHAT IS LEFT -- read this first (2026-09-06)
+## WHAT IS LEFT -- read this first (2026-09-07)
 
-**The port is playable and the audio crackle is fixed.** Menu text, the title
-logo, the HUD, 2D sprites, lighting, frame pacing, saving and now sound are
-all confirmed correct on real PAL hardware. Released as `v0.1.0-beta`.
+**No open defect. Released as `v0.4.0`.**
 
-**One open defect:** after seven or eight minutes the renderer stores to an
-address outside RAM and the machine faults. Four textures come up entirely
-`0xFF` about half a minute before it. See "The open defect" below -- and note
-that the first thing to fix is the crash handler, which loses its own report.
+Everything the user has reported is fixed and confirmed on real PAL hardware:
+the audio crackle, the crash when a new part of the island streams in, the
+alignment exception during a race on water, the flickering water, Taj offering
+a challenge already won, the world-key cutscene replaying, and the artefacts
+down the right of the menu labels and the title logo. Text, the title logo,
+the HUD, 2D sprites, lighting, frame pacing, saving and sound are all correct
+on the console.
+
+The day's five defects and the one rule behind four of them are in "What the
+port learned on 2026-09-07" below; read that before touching anything, because
+it is the shape most of what is left will take.
+
+**Where to look next, in the absence of a report:**
+- `dsi rec` in the heartbeat. A blank there is the port's own claim that
+  nothing it exercised indexed outside RAM. Its blind spot is an index that
+  lands *inside* MEM1, which takes no exception at all -- guard patterns
+  around the pool and the texture cache would catch those, and are not built.
+- The `grep` for shifts that can exceed 31 (see `MIPS_SHL`), re-run after any
+  update from the decompilation upstream.
+- Loops whose sentinel lies past the end of the array they index, and any
+  `[-1]`. Two of those turned up in `waves.c` alone, and `nm -n` on the ELF is
+  the only way to see them.
 
 ---
 
@@ -146,6 +162,119 @@ curvature is flat (`3752 3866 3802 3869 3892 3858 3973 3870`).
   so a run is ten seconds and an A/B is repeatable.
 - `aud lane0:` in the `GC_DEBUG` heartbeat -- the mod-8 curvature ratio at
   seven points along the mixer. 100 % is a clean buffer.
+
+---
+
+## What the port learned on 2026-09-07, in one rule
+
+**The decompilation depends on things the N64 gave it for free, and no
+compiler owes you any of them.** Five defects that day, four of them this same
+shape, and each one invisible in the source:
+
+| What the source says | What the N64 gave it | What the GameCube gives it |
+|---|---|---|
+| `D_800E30D4[unkC]` with no bound | KSEG0 is untranslated: a load from a physical address with nothing behind it returns junk | outside every BAT: DSI |
+| `D_800E30E4[-1]` | the next `s16` table along, ending in a 0 sentinel | the tail of `gWizpigVoiceTable`: GCC reversed the four tables |
+| `D_8012A5E8[k]` walking past its two entries | `D_8012A600[24]`, immediately after it, making one list of 26 | `gWaveBlockIDs`, which the walk then wrote into |
+| `1 << (j + 31)` | `sllv` masks the count to five bits: `1 << 0` | `slw` reads six and gives zero |
+
+The fifth was the port's own: a texture rectangle's far edge is exclusive
+except in `G_CYC_COPY`, and `gfx_tex_rect` counted it inclusive always.
+
+### The zone-load crash (`165cd413`)
+
+`waves_render`, `waves.c:1044`. The fixed crash handler named it on the first
+attempt: `Exception (DSI)`, `SRR0 800B7E88` = `lwzx r31,r8,r9`, `r8` =
+`D_800E30D4` = `802A1FF0`, `r9` = `0x07FC0000`, and `r8 + r9` = `DAR 88261FF0`
+exactly. `waves_block_hq` leaves `indexNum == gNumberOfLevelSegments` when the
+block is not found and reads one past `gWaveModel` anyway, then pushes that
+index into `gWaveBlockIDs`, which holds 512 and is never counted either.
+Bounded now, answering zero -- "not a high-quality wave tile" -- under
+`TARGET_GC`.
+
+### The water alignment exception (`e93250d1`)
+
+`func_800B92F4` computes `sp98 = (flags & 0xFF) - 1` and indexes with it;
+`waves_render` tests the same byte first and this function does not, so an
+empty sub-tile gives -1 and it reads `D_800E30E4[-1]`. Free on the N64 by
+accident of the `.data` layout, fatal here because GCC reversed the four
+tables. The sub-tile is skipped now, which is what the byte means.
+
+### The flickering water (`3de1884f`)
+
+`D_8012A5E8[2]` and `D_8012A600[24]` are one list of twenty-six.
+`func_800B92F4` walks both looking for a -1 terminator that
+`waves_visibility` writes into all of them. GCC put `D_8012A600` first, so what
+followed `D_8012A5E8[1]` here was `gWaveBlockIDs` (`8061bcd4 + 0x18 =
+8061bcec`): the walk never stopped and `D_8012A5E8[k].unk8++`, once per vertex,
+wrote into the visible-tile list.
+
+**How the numbers named it**, and this is the part worth copying. The
+heartbeat said one id per frame turned into something between 42 and 63 while
+`model 802c9200` and `segs 41` never changed all session, `from draw` every
+time, `bad unkC 0`. Ids do not go stale when nothing is reallocated. An earlier
+reading -- "the visible list outlived its model" -- was wrong about the same
+symptom; the reset it added is harmless and stays.
+
+**And the instrument had to change shape first.** Eight `gc_logfile_mark` lines
+were not enough: the body is a 232 KB ring and thirty-three beats had rolled
+over them, so the counter said 1963 skips and every line that would have
+explained them was gone. Per-beat state printed in the heartbeat, overwritten
+in place, is readable at the end of a session; marks written at the start of
+one are not.
+
+### Taj, and the world-key cutscenes (`a1f10f39`)
+
+`tajFlags |= 1 << (j + 31)` with j in 1..3 sets bits 0..2 on the N64 and
+nothing at all here, so the CHAL_UNLOCKED bit never reached the save and the
+gate that reads it stayed open forever: Taj offered a challenge already won,
+every time. The same expression twice more in `game.c` for the world-key
+cutscenes, so that scene played on every entry to the hub -- found by grepping
+for the shape, not by playing. `MIPS_SHL` masks on `TARGET_GC` only.
+
+**Nothing was wrong with the save.** `sizeof(SaveFile)` is 40, `SaveConfig` 8,
+`SaveBuffer` 512 exactly, block offsets 15/16/40 -- all identical to the N64,
+proved offline by compiling `char x[sizeof(T)]` and reading `nm -S`. Five
+minutes, no hardware run, and it removed a whole line of enquiry.
+
+### The sprite artefacts (`2f9cd43b`)
+
+A texture rectangle's far edge is exclusive except in `G_CYC_COPY`. Taj's
+vehicle dialogue put the proof in one log: a 16x16 glyph (`settile` maskS 4
+maskT 4, `tilesize` lrs 60 lrt 60) drawn into (73,22)-(89,38) with `s = t = 0`
+and `dsdx = dtdy = 1`. Sixteen pixels across sixteen texels is `u = [0, 1]`
+exactly; counting seventeen made it `[0, 1.0625]`, and with `cms = 0` the tile
+repeats, so the left edge of every glyph reappeared down its right side. COPY
+keeps the old arithmetic: nothing measured uses it.
+
+### Two instruments, and one that was switched off
+
+- **`dsi rec`** in the heartbeat. An access to an address the machine does not
+  have is decoded, stepped over with its destination register zeroed, and
+  recorded by faulting PC -- the way the N64 would have answered it. No line
+  means nothing the session exercised indexed outside RAM; a line is a list
+  for `addr2line`, collected while the game keeps running. It works because
+  libogc's vector restores the whole frame and `rfi`s (`lwz r4,12(r1) ;
+  mtsrr0 r4` at `80102c34`), disassembled from the linked image.
+  **Its blind spot is the larger class:** an index that lands *inside* MEM1
+  takes no exception at all.
+- **`GC_CLEARTINT`**. Magenta EFB clear plus a green screen fill, so the three
+  ways a pixel can be black are three colours. Tinting the clear alone proves
+  nothing -- DKR fills the whole screen every frame and paints over it.
+- **`GC_DEBUG` defaults to 0.** Half a day of card builds went out without the
+  heartbeat: boot trace, a few marks, and not one counter. The release .dol is
+  about 1.413 MB and the debug one about 1.441 MB, and that size difference is
+  the only quick way to tell them apart -- `built <date> <time>` in the log is
+  `__DATE__` from **gc_main.c only** and does not move when gc_main.c was not
+  recompiled.
+
+### A correction worth keeping
+
+"The four all-`0xFF` textures at fixed pool addresses" were asserted twice as
+the signature of a wild store. The heartbeat prints `head %08x %08x %08x %08x`
+-- **four words, eight pixels, of a 64x32 texture with 2048 of them.** Four
+textures whose first eight pixels are white is ordinary. Quote the field width
+before drawing a conclusion from a dump.
 
 ---
 

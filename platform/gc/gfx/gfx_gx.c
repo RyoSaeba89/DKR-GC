@@ -2716,17 +2716,19 @@ static void gfx_draw_rect(f32 x0, f32 y0, f32 x1, f32 y1, GXColor c) {
 void gc_gfx_init(void) {
     GXRModeObj *rmode = gc_video_mode();
     /*
-     * GC_CLEARTINT: what the EFB holds where nothing is drawn.
+     * GC_CLEARTINT: tells the three ways a pixel can end up black apart.
      *
      * Black is right for shipping and useless for diagnosis -- a pixel nothing
-     * covered and a pixel drawn black are the same pixel. Magenta separates
-     * them in one glance, and on a frame where everything is covered it
-     * changes nothing at all, so a build with it on is safe to play.
+     * covered and a pixel drawn black are the same pixel. With the knob on,
+     * the EFB clears to magenta and the game's own screen fill is drawn green
+     * (see gfx_fill_rect), so magenta means nothing touched it, green means
+     * the fill is showing through a hole in what was drawn over it, and black
+     * means something drew black.
      *
-     * Added 2026-09-07 for a hairline black rule across the middle of the
-     * screen, present on every screen the user looked at. If it turns magenta
-     * it is a gap in what is drawn; if it stays black it is drawn black, or it
-     * happens after the copy and belongs to the video path.
+     * The pair matters: DKR fills the whole screen every frame, so a tinted
+     * clear on its own is painted over before anything else and can never
+     * show. Tinting only the clear proves nothing, which is how this knob was
+     * first written and why it says so here.
      */
     GXColor background = { 0, 0, 0, 0xFF };
     f32 yscale;
@@ -3058,16 +3060,14 @@ static void gfx_fill_rect(u32 w0, u32 w1) {
 #if GC_CLEARTINT
     {
         /*
-         * The second half of GC_CLEARTINT, and the reason the first half could
-         * not answer on its own.
+         * The second half of GC_CLEARTINT, and the reason the first half
+         * cannot answer on its own.
          *
          * DKR fills the whole screen every frame -- `cover kind4 area
-         * 1000/1000` in the heartbeat -- so the magenta the EFB was cleared to
-         * is painted over before anything else is drawn, and a magenta clear
-         * can never show. Tinting this rectangle green gives the three cases
-         * three colours: magenta is a pixel nothing touched at all, green is
-         * the game's own screen fill showing through a hole in the scene drawn
-         * over it, and black is something that actually draws black.
+         * 1000/1000` in the heartbeat, and `fills 2 (0 blended, 1 vers le Z)`
+         * in a race is that fill plus the depth clear. So a tinted EFB clear
+         * is painted over before anything else is drawn. Green here is what
+         * makes the clear's magenta mean something.
          */
         GXColor tint = { 0, 0xFF, 0, 0xFF };
 
