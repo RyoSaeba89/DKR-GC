@@ -574,7 +574,8 @@ void waves_visibility(s32 xPosition, s32 yPosition, s32 zPosition, s32 currentVi
  */
 void gc_logfile_mark(const char *fmt, ...);
 
-static s32 gc_wave_reports = 0;
+static s32 gc_wave_tile_reports = 0;
+static s32 gc_wave_block_reports = 0;
 
 static s32 gc_wave_tile_flags(u32 unkC) {
     s32 count = gWaveTileCountX * gWaveTileCountZ;
@@ -582,9 +583,9 @@ static s32 gc_wave_tile_flags(u32 unkC) {
     if (D_800E30D4 != NULL && unkC < (u32) count) {
         return D_800E30D4[unkC];
     }
-    if (gc_wave_reports < 8) {
-        gc_wave_reports++;
-        gc_logfile_mark("waves: unkC %u of %d (tbl %08x, model %08x, segs %d, vis %d, grid %dx%d)", unkC,
+    if (gc_wave_tile_reports < 8) {
+        gc_wave_tile_reports++;
+        gc_logfile_mark("\nwaves: unkC %u of %d (tbl %08x, model %08x, segs %d, vis %d, grid %dx%d)", unkC,
                         count, (u32) D_800E30D4, (u32) gWaveModel, gNumberOfLevelSegments, gVisibleWaveTiles,
                         gWaveTileCountX, gWaveTileCountZ);
     }
@@ -595,9 +596,9 @@ static s32 gc_wave_block_ok(s32 index) {
     if (gWaveModel != NULL && (u32) index < (u32) gNumberOfLevelSegments) {
         return TRUE;
     }
-    if (gc_wave_reports < 8) {
-        gc_wave_reports++;
-        gc_logfile_mark("waves: block %d of %d (model %08x, vis %d)", index, gNumberOfLevelSegments,
+    if (gc_wave_block_reports < 8) {
+        gc_wave_block_reports++;
+        gc_logfile_mark("\nwaves: block %d of %d (model %08x, vis %d)", index, gNumberOfLevelSegments,
                         (u32) gWaveModel, gVisibleWaveTiles);
     }
     return FALSE;
@@ -673,6 +674,34 @@ void func_800B92F4(s32 blockID, s32 viewportID) {
             sp88 = 0;
         }
 
+#ifdef TARGET_GC
+        /*
+         * An empty sub-tile. The byte is zero when this quarter carries no
+         * wave, and `- 1` then makes the index -1; waves_render tests the same
+         * byte before subtracting (`if (sp104 & 0xFF)`) and draws the flat
+         * plane instead, but this function does not, and goes on to read
+         * D_800E30E4[-1].
+         *
+         * On the N64 that is invisible *by accident of the data*: the four s16
+         * tables sit in declaration order, each ends with a 0 sentinel, and
+         * the halfword before D_800E30FC is D_800E30E8[9] = 0 while the one
+         * before D_800E3144 is D_800E3110[25] = 0. So -1 always read zero and
+         * selected D_800E304C[0], a real pointer.
+         *
+         * GCC emits the same four tables in the reverse order (D_800E3144 at
+         * 80158b64, then D_800E3110, D_800E30FC, D_800E30E8), so the halfword
+         * before D_800E3144 is the tail of gWizpigVoiceTable. On 2026-09-07,
+         * during a race on water -- the 26-entry table, so D_800E3144 -- that
+         * gave D_800E304C an index far outside nine pointers, and the `lfsx`
+         * at waves.c:690 took an alignment exception on 8029DB35.
+         *
+         * Skipping the sub-tile is what the byte means and what waves_render
+         * already does with it.
+         */
+        if (sp98 < 0) {
+            continue;
+        }
+#endif
         sp84 = D_8012A5E8[k].unk6;
         vertices = &gWaveVertices[gWaveVertexFlip + viewportID][sp90 * sp98];
         sp98 = D_800E30E4[sp98];
@@ -773,6 +802,12 @@ void func_800B97A8(s32 blockID, s32 arg1) {
             sp98 = 0;
         }
 
+#ifdef TARGET_GC
+        /* The same empty sub-tile, in the opaque path. See func_800B92F4. */
+        if (spA8 < 0) {
+            continue;
+        }
+#endif
         var_a0 = D_8012A5E8[k].unk6;
         vertices = &gWaveVertices[gWaveVertexFlip + arg1][spA0 * spA8];
         spA8 = D_800E30E4[spA8];
@@ -1505,6 +1540,20 @@ void func_800BBF78(LevelModel *model) {
     );
     // clang-format on
 
+#ifdef TARGET_GC
+    /*
+     * The visible list names segments of the model that has just been freed.
+     *
+     * gWaveBlockIDs is filled by waves_block_hq during the update pass and read
+     * by waves_render in the same frame; when a new part of the island streams
+     * in between the two, the ids outlive the array they index. Measured on
+     * 2026-09-07: `waves: block 44 of 41`, an id three past the end of a model
+     * that had just been rebuilt smaller. Left alone it indexes gWaveModel
+     * outside its allocation -- which is how a wave tile ends up drawn from
+     * whatever follows it in the pool.
+     */
+    gVisibleWaveTiles = 0;
+#endif
     gWaveGenList = (WaveGen *) ((u32) gWaveModel + model->numberOfSegments * sizeof(LevelModel_Alternate));
     gWaveGenObjs = (Object **) (gWaveGenList + sizeof(WaveGen *) * 8);
     D_800E3184 = (unk800E3184 *) (gWaveGenObjs + 32);
