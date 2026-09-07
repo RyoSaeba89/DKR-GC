@@ -149,6 +149,63 @@ curvature is flat (`3752 3866 3802 3869 3892 3858 3973 3870`).
 
 ---
 
+## The zone-load crash: an unbounded wave index (2026-09-07, FIXED)
+
+**`waves_render`, `waves.c:1044`.** It reproduces when a new part of the island
+streams in while driving, about 90 seconds into a session -- not the "7-8
+minutes" the first crash suggested.
+
+The fixed handler put the first fault on screen at the first attempt:
+`Exception (DSI)`, `SRR0 800B7E88`, `DAR 88261FF0`, and a stack that resolves
+cleanly through `waves_render <- render_scene <- mode_game <- main_game_loop <-
+thread3_main <- thread_trampoline`. `objdump` says the instruction is
+
+    800b7e80:  lwz   r9,12(r18)      ; spE0->unkC
+    800b7e84:  slwi  r9,r9,2
+    800b7e88:  lwzx  r31,r8,r9       ; D_800E30D4[spE0->unkC]   <- SRR0
+
+with `r8` = `D_800E30D4` = `802A1FF0` and `r9` = `0x07FC0000`; `r8 + r9` is
+`88261FF0`, the DAR, exactly. `GPR19 = 5` is the loop's `i` and `GPR21 =
+80612ACE` is `&gWaveBlockIDs[5]` (`gWaveBlockIDs` = `80612AC4`), so the
+statement is `sp104 = D_800E30D4[spE0->unkC]` with `spE0 =
+&gWaveModel[gWaveBlockIDs[5]]` and an `unkC` of `0x01FF0000`.
+
+**Nothing on that path is bounded.** `waves_block_hq` walks `gWaveModel` for a
+block and, when it does not find one, leaves `indexNum ==
+gNumberOfLevelSegments` and reads `gWaveModel[indexNum].unkC` anyway -- one
+entry past the array, which is exactly where `gWaveGenList` begins -- then
+pushes that index into `gWaveBlockIDs`, which holds 512 and is never counted
+either. A frame later `waves_render` indexes `D_800E30D4` with what it found.
+
+**Why the N64 never noticed, and this is the general lesson.** `D_800E30D4` is
+a KSEG0 pointer; KSEG0 is not translated, and a MIPS load from a physical
+address with nothing behind it returns junk and carries on. The same address on
+the GameCube is outside every BAT and takes a DSI. *An out-of-range read is a
+crash here and was free there* -- so any decompiled index the original never
+bounded is a candidate, and the port cannot assume "it worked on the N64" means
+"it was in range".
+
+The fix bounds the read rather than changing what the game does: an index the
+N64 would have answered with junk is answered with zero, which reads as "not a
+high-quality wave tile". All of it under `TARGET_GC`. The guards report their
+first eight firings through `gc_logfile_mark`, with `gWaveModel`,
+`gNumberOfLevelSegments`, `gVisibleWaveTiles` and the grid size, so the next
+run says *which* invariant broke -- a block id gone stale across a
+reallocation, or `gWaveModel` itself having moved.
+
+**The crash handler's own half worked and is worth recording.** The screen
+carried the first fault, and the log carried no CRASH block -- which means a
+second exception still struck during the card write and the doctored
+`frame_context` is what put the right registers on the television. The card
+copy from inside the handler remains unreliable; the screen is the channel.
+
+---
+
+## Superseded: "a wild store in the renderer" (2026-09-06)
+
+It was a wild *load*, in `waves_render`, and the section above names it. The
+reasoning below stands as the record of how the second exception hid it.
+
 ## The open defect: a wild store in the renderer (2026-09-06)
 
 After seven or eight minutes of play the machine stops. A photograph of the
