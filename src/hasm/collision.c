@@ -29,12 +29,24 @@ extern s32 gNumCollisionCandidates;
  * -- the Tricky spiral is the extreme case -- that reads on screen as driving
  * through the ground, with nothing in the log to say so. `full` is the counter
  * that matters; `max` says how much headroom there was when it did not fill.
+ *
+ * Each of them is kept twice, per beat and for the whole session, and the
+ * second copy is the one that earns its place. The log body is a ring: the
+ * first run of this counter covered a six-minute session and nineteen beats
+ * survived, about twenty-three seconds, so whatever the numbers did during the
+ * race that prompted the fix had been overwritten by the time the card came
+ * out. A high-water mark that is never reset reads correctly at the end of a
+ * session however long it was, which is the only time anyone reads it.
  */
 u32 gGcColCandCalls = 0;
 u32 gGcColCandMax = 0;
 u32 gGcColCandFull = 0;
 u32 gGcColSegMax = 0;
 u32 gGcColSegFull = 0;
+u32 gGcColCandMaxRun = 0;
+u32 gGcColSegMaxRun = 0;
+u32 gGcColCandFullRun = 0;
+u32 gGcColSegFullRun = 0;
 #endif
 
 // All handwritten assembly, below.
@@ -132,6 +144,7 @@ s32 generate_collision_candidates(s32 numPoints, Vec3f *origins, Vec3f *targets,
             if (counter == 10) {
 #ifdef TARGET_GC
                 gGcColSegFull++;
+                gGcColSegFullRun++;
 #endif
                 break;
             }
@@ -191,6 +204,7 @@ s32 generate_collision_candidates(s32 numPoints, Vec3f *origins, Vec3f *targets,
                 if (j == MAX_COLLISION_CANDIDATES) {
 #ifdef TARGET_GC
                     gGcColCandFull++;
+                    gGcColCandFullRun++;
 #endif
                     goto out;
                 }
@@ -206,6 +220,12 @@ out:
     }
     if ((u32) counter > gGcColSegMax) {
         gGcColSegMax = counter;
+    }
+    if ((u32) j > gGcColCandMaxRun) {
+        gGcColCandMaxRun = j;
+    }
+    if ((u32) counter > gGcColSegMaxRun) {
+        gGcColSegMaxRun = counter;
     }
 #endif
     gNumCollisionCandidates = j;

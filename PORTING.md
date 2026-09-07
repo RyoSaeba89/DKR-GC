@@ -9,40 +9,59 @@ what is left.
 
 ---
 
-## WHAT IS LEFT -- read this first (2026-09-07, late)
+## WHAT IS LEFT -- read this first (2026-09-07, v0.5.0)
 
-**Two defects fixed and on the card, neither yet confirmed on console.**
-`dkr.dol` md5 `7d7f4b154c98bd7bc837538e4df9755f` (`GC_DEBUG=1`, 1 441 984
-bytes), `dkr-rel.dol` md5 `f8f6aaea3c509442718b4bc8c1505504` (`GC_DEBUG=0`,
-1 415 744 bytes). Both `GC_EMBED_ASSETS=0`. The card is drive **F:** now, not
-D:.
+**No open defect.** Both of the day's defects are fixed and **confirmed on the
+user's PAL console**: every boss but Wizpig 1 opening with his own defeat
+speech, and driving through the floor on the Tricky spiral. Released as
+`v0.5.0`.
 
-1. **Every boss but Wizpig 1 greeted the player with his own defeat speech**,
-   and the same line broke five hub worlds and the Future Fun Land trophy
-   intro. A third `<< (x + 31)`, missed by the first grep because the shift
-   count was `settings->worldId` and the pattern only matched a bare
-   identifier. See "The boss opened with the losing dialogue" below.
-2. **The collision candidate list was over-filled and truncated.** One line of
-   `compute_grid_overlap_mask` in `src/hasm/collision.c` disagrees with the
-   handwritten assembly beside it in `src/hasm/collision.s`. See "Driving
-   through the floor" below.
+On the card: `dkr.dol` md5 `1f07d50b0650d5597765c174a10a4d96` (`GC_DEBUG=1`,
+1 442 272 bytes), `dkr-rel.dol` and `dist/dkr/dkr.dol` md5
+`95fe2b7ccab1679b1e86f181f94dc537` (`GC_DEBUG=0`, 1 415 808). Both
+`GC_EMBED_ASSETS=0`. **The card is drive `F:` now, not `D:`.**
 
-Before them, everything the user had reported was fixed and confirmed on real
-PAL hardware: the audio crackle, the crash when a new part of the island
-streams in, the alignment exception during a race on water, the flickering
-water, Taj offering a challenge already won, the world-key cutscene replaying,
-and the artefacts down the right of the menu labels and the title logo. Text,
-the title logo, the HUD, 2D sprites, lighting, frame pacing, saving and sound
-are all correct on the console.
+### What the confirming run measured, and what it could not
 
-**Read "What the port learned on 2026-09-07" below before touching anything**;
-between them, that section and the two above are the shape most of what is
-left will take.
+Six minutes, 18 540 retraces, and everything the port counts came back clean:
+
+    clock: 1220 ms per 60 VSyncs        <- nominal for a 50 Hz console
+    dkr-gc: 18540 retr | dl 9105/9105 swap 9108/9108 copy 9108/9108
+    vi 18741/0                          <- zero dropped retrace messages
+    ignored:   aud-ign:                 <- both empty
+    asserts 0 | n64 io 18 reads, 0 unknown | gzip 4013 ok, 0 failed
+    ai drops 0 events | ai steps 0 | aud lane0 100-104 %
+    pool: 602/1600 slots, 2057 KB used, 1999 KB largest free
+    collide: 60 calls, cand max 57/500 full 0 | segs max 1/10 full 0
+
+No `dsi rec` line, so nothing the session exercised indexed outside RAM. No
+`waves:` line, so neither wave guard fired. No exception, no crash record.
+
+**But the `collide:` numbers do not cover the race they were built for, and
+that is worth being exact about.** The log body is a 232 KB ring and nineteen
+beats survived it -- about twenty-three seconds of a six-minute session. In
+that window `calls` tracks `dynlit2 obj` exactly (62/62, 60/60, 44/44, 42/42)
+and `segs max` never leaves 1, which is the signature of standing in one
+segment, not of a lap of a spiral. So the log says the cap was never reached in
+the last twenty-three seconds; **the evidence that the floor is fixed is the
+user's own, from the sofa, and it is the evidence that counts here.**
+
+The blind spot is closed rather than argued with: the four counters are now
+kept twice, per beat and since boot, and the heartbeat prints both.
+
+    collide run: cand max %u/500 full %u | segs max %u/10 full %u
+
+That second line is never reset, so it reads correctly at the end of a session
+however long, which is the only moment anyone reads it. **This is the third
+time the ring has eaten the evidence** -- it took eight `gc_logfile_mark` lines
+from the wave investigation and now twenty-three seconds is all that was left
+of this one. Per-beat state printed in the heartbeat is readable at the end of
+a session; a mark at the start of one is not, and a counter reset every beat is
+only half of that lesson.
 
 **Where to look next, in the absence of a report:**
-- The `collide:` line in the heartbeat, which is new. `full` non-zero means
-  the port threw geometry away before testing it, and the fall through the
-  floor is not fully fixed; `cand max` well under 500 means it is.
+- `collide run:` in the heartbeat. `full 0` there is the port's claim that no
+  collision test in the whole session was truncated.
 - `dsi rec` in the heartbeat. A blank there is the port's own claim that
   nothing it exercised indexed outside RAM. Its blind spot is an index that
   lands *inside* MEM1, which takes no exception at all -- guard patterns
@@ -50,11 +69,12 @@ left will take.
 - The rest of `src/hasm/`. `collision.c`, `obj_animate.c`, `obj_shade_fast.c`
   and `math_util.c` are C reimplementations of handwritten assembly, compiled
   only off the N64, so **no N64 build has ever executed a line of them**. One
-  of the four has now been diffed against its `.s` and one bug came out.
-  The other three have not.
+  of the four has now been diffed against its `.s` and one bug came out. The
+  other three have not.
 - The `grep` for shifts that can exceed 31 (see `MIPS_SHL`), re-run after any
-  update from the decompilation upstream -- and use the widened pattern below,
-  not the original one.
+  update from the decompilation upstream -- with the widened pattern below, not
+  the original one. As of v0.5.0 all 123 non-literal shifts in `src/` have been
+  inspected and the class is closed.
 - Loops whose sentinel lies past the end of the array they index, and any
   `[-1]`. Two of those turned up in `waves.c` alone, and `nm -n` on the ELF is
   the only way to see them.
@@ -323,15 +343,22 @@ recording so nobody re-derives them:
 
 ### The instrument that says whether the fix was enough
 
-`GC_DEBUG` builds now print, once per beat:
+`GC_DEBUG` builds print, once per beat and again since boot:
 
-    collide: N calls, cand max M/500 full F | segs max S/10 full G
+    collide:     N calls, cand max M/500 full F | segs max S/10 full G
+    collide run:          cand max M/500 full F | segs max S/10 full G
 
-`full` is the counter that matters. **`full 0` is the claim that no collision
-test this session was truncated**; anything else means geometry was thrown away
-before it was tested, and the fall through the floor is not finished. `segs
-full` is the second cap, ten segments, and it is in the original too -- if that
-one is what fires, the fix is a different one.
+`full` is the counter that matters. **`full 0` on the `run` line is the claim
+that no collision test in the whole session was truncated**; anything else
+means geometry was thrown away before it was tested, and the fall through the
+floor is not finished. `segs full` is the second cap, ten segments, and it is
+in the original too -- if that one is what fires, the fix is a different one.
+
+The second line exists because the first one was not enough. The confirming run
+was six minutes long and the log ring kept twenty-three seconds of it, in which
+`segs max` never left 1 -- so the per-beat numbers described a hub, not the
+spiral, and could not speak to the defect they were built for. A high-water
+mark that is never reset can.
 
 ---
 

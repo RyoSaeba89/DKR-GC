@@ -113,6 +113,12 @@ extern u32 gGcColCandMax;
 extern u32 gGcColCandFull;
 extern u32 gGcColSegMax;
 extern u32 gGcColSegFull;
+/* The same four, never reset, so a wrapped log still carries the worst case of
+ * the whole session rather than of its last twenty-three seconds. */
+extern u32 gGcColCandMaxRun;
+extern u32 gGcColSegMaxRun;
+extern u32 gGcColCandFullRun;
+extern u32 gGcColSegFullRun;
 
 /* Truncate the log and note which path took it. Call once, after the FAT
  * volume is mounted and before anything worth logging happens. */

@@ -283,6 +283,12 @@ static void gc_heartbeat(u32 ticks) {
                (unsigned) gGcColCandCalls, (unsigned) gGcColCandMax, 500u,
                (unsigned) gGcColCandFull, (unsigned) gGcColSegMax,
                (unsigned) gGcColSegFull);
+        /* Since boot, and never reset: the log body is a ring, and on
+         * 2026-09-07 nineteen beats of a six-minute session survived it. This
+         * half is what is still true when the card comes out. */
+        gc_log("\n           collide run: cand max %u/%u full %u | segs max %u/10 full %u",
+               (unsigned) gGcColCandMaxRun, 500u, (unsigned) gGcColCandFullRun,
+               (unsigned) gGcColSegMaxRun, (unsigned) gGcColSegFullRun);
     }
     gGcColCandCalls = 0;
     gGcColCandMax = 0;

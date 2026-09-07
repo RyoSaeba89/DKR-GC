@@ -10,10 +10,11 @@ reimplemented against libogc2: libultra's scheduler, threads, message queues,
 PI DMA, VI, AI, controller, Controller Pak and EEPROM; the F3DDKR display-list
 interpreter on GX; and the N64 audio microcode's sixteen opcodes on the CPU.
 
-**Status: v0.4.0 — playable end to end on a real PAL console.** Adventure mode,
-races, challenges, bosses, the hub worlds, sound, saving and the menus all
-work. Nothing is stubbed: the port handles every graphics and audio opcode the
-game emits, and the heartbeat's `ignored:` and `aud-ign:` lines are empty.
+**Status: v0.5.0 — playable end to end on a real PAL console, with no open
+defect.** Adventure mode, races, challenges, bosses, the hub worlds, sound,
+saving and the menus all work. Nothing is stubbed: the port handles every
+graphics and audio opcode the game emits, and the heartbeat's `ignored:` and
+`aud-ign:` lines are empty.
 
 Testing is on hardware only, from an SD card. Every defect this port has had
 that mattered was invisible under an emulator, so a passing emulator run is not
@@ -118,8 +119,9 @@ the port drops.
 
 ## Known issues
 
-**Fixed but not yet confirmed on console** (both found by reading, both with a
-mechanism that is written out in full in [`PORTING.md`](PORTING.md)):
+**None open.** Everything reported from console has been fixed and confirmed
+there. The two most recent, both found by reading rather than by running, are
+written out in full in [`PORTING.md`](PORTING.md):
 
 - **Every boss but Wizpig 1 greeted the player with his own defeat speech**,
   and the same line suppressed the four- and eight-balloon cutscenes in five
@@ -131,10 +133,10 @@ mechanism that is written out in full in [`PORTING.md`](PORTING.md)):
   `compute_grid_overlap_mask` disagrees with the handwritten assembly it was
   transcribed from, making the collision grid mask eight times too permissive
   in Z; the candidate list then hit its 500-entry cap and dropped the floor
-  before it was tested. `GC_DEBUG` builds now print a `collide:` line saying
-  whether that cap is still being reached.
+  before it was tested. `GC_DEBUG` builds print a `collide run:` line saying
+  whether that cap was reached anywhere in the session.
 
-**Open:**
+**Not defects, but worth knowing:**
 
 - Time Trial ghosts save to the emulated Controller Pak, but the full
   save-power-off-reload path has never been walked end to end.
@@ -143,12 +145,12 @@ mechanism that is written out in full in [`PORTING.md`](PORTING.md)):
   so no N64 build has executed them. `collision.c`, the fourth, has now been
   diffed against its `.s` and had a bug; the other three have not been checked.
 
-Everything the port has been reported to get wrong before this is fixed and
-confirmed on hardware: the audio crackle, the crash when a new part of the
-island streams in, an alignment exception during a race on water, flickering
-and missing water, Taj re-offering a challenge already won, the world-key
-cutscene replaying, missing menu text and title logo, wrong 2D sprites,
-flickering shadows, and an asset that failed to decompress.
+The full list of what has been fixed and confirmed on hardware: the audio
+crackle, the crash when a new part of the island streams in, an alignment
+exception during a race on water, flickering and missing water, Taj re-offering
+a challenge already won, the world-key cutscene replaying, missing menu text
+and title logo, wrong 2D sprites, flickering shadows, an asset that failed to
+decompress, the boss dialogue, and the floor of the Tricky spiral.
 
 ## Credits
 
