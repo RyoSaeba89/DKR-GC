@@ -36,6 +36,25 @@ u32 interrupts_disable(void) {
     if (gIntDisFlag) {
         return __osDisableInt();
     }
+    /*
+     * Falling off the end of a non-void function is undefined behaviour, and
+     * this one is called by every memory-pool operation in the game.
+     *
+     * The handwritten original leaves $v0 unset on this path too, and it gets
+     * away with it: interrupts_enable is guarded by the same flag, so the value
+     * is never used while the flag is clear. But "never used" is a property of
+     * the callers, not of the language -- GCC is entitled to treat the path as
+     * unreachable and delete the code around it. At -O2 with devkitPPC 16 it
+     * does not (it emits `beqlr` and returns with r3 holding whatever the
+     * caller left there), and that is luck, not a guarantee.
+     *
+     * Returning zero costs one instruction, changes nothing observable --
+     * __osRestoreInt is only reached when the flag is set, and then the real
+     * value is the one that was returned -- and takes the port out of the class
+     * of bug that `__assert` and `MIPS_SHL` were both in: something the N64
+     * toolchain happened to tolerate.
+     */
+    return 0;
 }
 #else
 GLOBAL_ASM("asm/math_util/disable_interrupts.s")

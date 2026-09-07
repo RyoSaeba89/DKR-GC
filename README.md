@@ -136,14 +136,25 @@ written out in full in [`PORTING.md`](PORTING.md):
   before it was tested. `GC_DEBUG` builds print a `collide run:` line saying
   whether that cap was reached anywhere in the session.
 
+**Fixed since v0.5.0, not yet confirmed on console:**
+
+- **`interrupts_disable` fell off the end of a non-void function.** It is
+  called around every memory-pool operation. Undefined behaviour that devkitPPC
+  happens to compile into a harmless early return today; it now returns a
+  defined value. Found by reading `src/hasm/math_util.c` against the assembly
+  beside it.
+
 **Not defects, but worth knowing:**
 
 - Time Trial ghosts save to the emulated Controller Pak, but the full
   save-power-off-reload path has never been walked end to end.
-- `src/hasm/obj_animate.c`, `obj_shade_fast.c` and `math_util.c` are C
-  reimplementations of handwritten assembly that only ever compile off the N64,
-  so no N64 build has executed them. `collision.c`, the fourth, has now been
-  diffed against its `.s` and had a bug; the other three have not been checked.
+- All four `src/hasm/*.c` are C reimplementations of handwritten assembly that
+  only ever compile off the N64, so no N64 build has executed them. All four
+  have now been diffed against their `.s`: two carried a defect, and the
+  remaining divergences are catalogued in
+  [`PORTING.md`](PORTING.md) — an `AVOID_UB` inconsistency in `vec3s_reflect`
+  that is deliberately left matching the retail cartridge, two one-LSB rounding
+  differences that are upstream's, and PowerPC's fused multiply-add.
 
 The full list of what has been fixed and confirmed on hardware: the audio
 crackle, the crash when a new part of the island streams in, an alignment

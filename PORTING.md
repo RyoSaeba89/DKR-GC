@@ -16,9 +16,14 @@ user's PAL console**: every boss but Wizpig 1 opening with his own defeat
 speech, and driving through the floor on the Tricky spiral. Released as
 `v0.5.0`.
 
-On the card: `dkr.dol` md5 `1f07d50b0650d5597765c174a10a4d96` (`GC_DEBUG=1`,
-1 442 272 bytes), `dkr-rel.dol` and `dist/dkr/dkr.dol` md5
-`95fe2b7ccab1679b1e86f181f94dc537` (`GC_DEBUG=0`, 1 415 808). Both
+Since that release, the other three `src/hasm/*.c` have been read against their
+assembly -- see the next section. One live defect came out of it
+(`interrupts_disable` falling off the end of a non-void function), fixed and on
+the card, **not yet confirmed on console and not yet released**.
+
+On the card: `dkr.dol` md5 `67518d54a9821c9947cc29b8a0c7b6ca` (`GC_DEBUG=1`,
+1 442 336 bytes), `dkr-rel.dol` and `dist/dkr/dkr.dol` md5
+`350f56d4c98fd1e6d55b345934442c40` (`GC_DEBUG=0`, 1 415 872). Both
 `GC_EMBED_ASSETS=0`. **The card is drive `F:` now, not `D:`.**
 
 ### What the confirming run measured, and what it could not
@@ -78,6 +83,146 @@ only half of that lesson.
 - Loops whose sentinel lies past the end of the array they index, and any
   `[-1]`. Two of those turned up in `waves.c` alone, and `nm -n` on the ELF is
   the only way to see them.
+
+---
+
+## The rest of `src/hasm/` against its assembly (2026-09-07)
+
+The fourth file, `collision.c`, gave up a bug that put a racer through the
+floor. This is the other three, read line by line against the `.s` beside them.
+**One live defect, one upstream inconsistency, and a list of things that are now
+verified and need not be re-searched.**
+
+### The defect: `interrupts_disable` falls off the end of a non-void function
+
+```c
+u32 interrupts_disable(void) {
+    if (gIntDisFlag) {
+        return __osDisableInt();
+    }
+}                      /* <- no return here */
+```
+
+`memory.c` calls this around every pool operation. The handwritten original
+leaves `$v0` unset on the same path and gets away with it, because
+`interrupts_enable` is guarded by the same flag and never looks at the value
+while the flag is clear. That is a property of the callers, not of the
+language: falling off the end of a value-returning function is undefined
+behaviour, and GCC is entitled to treat the path as unreachable and delete the
+code around it.
+
+**Measured, not assumed:** devkitPPC 16 at `-O2` emits
+
+    lbz r9, gIntDisFlag ; cmpwi r9,0 ; beqlr+ ; b __osDisableInt
+
+-- it returns with `r3` holding whatever the caller left there. Harmless today,
+and luck rather than a guarantee. `menu.c` does turn the flag on
+(`set_gIntDisFlag(TRUE)` at 8400 and 13051), so the live path is exercised.
+Fixed by returning zero: one instruction, nothing observable changes, and the
+port leaves the class of bug that `__assert` and `MIPS_SHL` were both in --
+something the N64 toolchain happened to tolerate.
+
+### The inconsistency: `vec3s_reflect`, and why it is being left alone
+
+The assembly carries a conditional the C does not:
+
+```
+#ifdef AVOID_UB
+    sub  t5, t5, t2      /* reflected.z = scaled_normal_z - incident.z */
+#else
+    sub  t5, t5, t0      /* !@bug: should subtract incident.z, not incident.x */
+#endif
+```
+
+The C is unconditional and uses `vec->x`, with the decomp's own `//!@bug`
+comment on it. This build defines `AVOID_UB`, so **the assembly and the C
+disagree about what this function computes**, and the port compiles the C.
+
+The C is the one that matches the shipped cartridge. `vec3s_reflect` has
+exactly one caller -- `objects.c:8137`, the environment-map reflection -- so the
+"bug" is part of how shiny surfaces have always looked in this game. Correcting
+it would be correcting the reference by reasoning, which this project has been
+burned by before. It stays, and it is written down here so nobody has to
+re-derive it.
+
+### Verified correct, and not to be re-searched
+
+`obj_shade_fast.c`, **both functions, whole**: the ambient/diffuse float order,
+the `>> 11` and `>> 7` arithmetic dot-product shifts, the *logical* `>> 16` and
+`>> 21` on the products (`mult`/`mflo`/`srl`, reproduced by multiplying in
+`u32`), the `>= 0x100 -> 0xFF` clamp and the deliberately unclamped
+facing-away branch, the `r=g=b, a=0xFF` store pattern the original does with two
+`sh`, and the `RENDER_ENVMAP` (0x8000) rule for advancing the normal cursor.
+Every struct offset the assembly touches was measured, not read off a comment:
+`Vertex` 10, `Vec3s` 6, `TriangleBatchInfo` 12, `ObjectTransform` 24,
+`ShadeProperties` 48, `MtxF` 64.
+
+`obj_animate.c`, **whole**: the clamp to `numberOfModelIds` rather than
+`numberOfModelIds - 1`; the *logical* `>> 4` on a sign-extended frame, which is
+what makes a negative frame land in the out-of-range clamp instead of indexing
+backwards; the rebuild-from-base-pose walk through `animatedVertexIndices`
+(declared `s32 *`, indexed as `s16 *`, which is what the `lh` says); both
+one-key-at-a-time walks and their `+2` / `+1` stride offsets; the unsigned
+multiply and logical shift in the fraction; the four big-endian `s16` in the
+twelve-byte key header, including the `frameWhole == 0` special case that lands
+on the same `key + keyStride*(frameWhole+2) - 12` by a different route; and the
+output cursor advancing for every vertex, moved or not.
+
+`math_util.c` and `platform/gc/hasm_math_util.c`:
+
+- **`gSineTable` and `gArcTanTable` are byte-identical to the assembler's own
+  `.half` data** -- 1025 entries each, diffed programmatically, zero
+  mismatches. They were transcribed, not regenerated from `sinf`.
+- `sins_s16` / `coss_s16` / `sins_2` / `coss_2` / `sins_f` / `coss_f`: the
+  `a & 0x4000 -> a ^= 0x7FFF` fold, the byte-offset table index, the unsigned
+  interpolation, the `a & 0x8000` negation, and the quarter-turn offset that
+  makes cosine out of sine.
+- `atan2s`: all four quadrants and both branch boundaries traced against the
+  assembly's base angles and its x/y swap. They agree exactly.
+- `rand_range`: the 64-bit seed shuffle. The C's upper 32 bits differ from the
+  assembly's, and it does not matter -- nothing that survives to the stored
+  seed or to the `& 0xFFF` mask reads them. The `divu`/`mfhi` range mapping is
+  reproduced by the unsigned `%`.
+- `mtxf_to_mtx`, `mtxf_to_mtxs`, `mtxs_transform_dir`, `tri2d_xz_contains_point`,
+  `dmacopy_doubleword`, `set_gIntDisFlag`, `get_gIntDisFlag`: element layouts,
+  byte offsets and shift kinds all check out. `mtxs_transform_dir` caches its
+  input before writing the output, which is the thing that would have been a
+  bug if it did not.
+- `mtxf_from_transform` and `mtxf_from_inverse_transform`: every one of the
+  sixteen element stores lands at the offset the assembly writes, including the
+  distinctive early `[1][2] = xRotSine`. **`mtxf_from_inverse_transform` reads
+  only `rotation` and `position`** -- confirmed, which is what makes
+  `obj_shade_fast`'s uninitialised-`flags` divergence harmless.
+- `func_80070058`, `set_breakpoint`, `calc_dyn_lighting_for_level_segment`,
+  `bad_int_sqrt`, `fix32_sqrt`, `mtx_to_mtxs`, `mtxs_transform_point` have no C
+  body or are `UNUSED`, and `nm` on the linked image confirms **none of them is
+  in it**. Nothing calls them, so nothing depends on them.
+
+### Two accepted divergences, both arithmetic, both upstream's
+
+- **`cvt.w.s` versus a C cast.** The assembly uses `cvt.w.s` (current rounding
+  mode, round-to-nearest under libultra) in `mtxf_to_mtx`, `arctan2_f` and
+  `fix32_sqrt`, where the C casts and therefore truncates. Worth at most one
+  LSB: 1/65536 of a matrix element. Where the original wanted truncation it
+  says so -- `mtxf_to_mtxs` uses `trunc.w.s`, and `obj_shade_fast` sets
+  round-toward-zero explicitly with the `cfc1`/`ctc1` dance -- and in those
+  places the C agrees exactly.
+- **`atan2s`'s table index.** The assembly divides in 64-bit integer and
+  truncates; the C is SM64's float version and rounds. At most one table step,
+  about 0.04 degrees.
+
+### And one that is the port's, not upstream's: fused multiply-add
+
+PowerPC has `fmadds`, and GCC's default `-ffp-contract=fast` uses it: **1199
+fused multiply-adds in the linked image**, `mtxf_mul` among them. MIPS computes
+`a*b + c*d` with two roundings; the GameCube does the multiply-add with one.
+The result is *more* accurate, never less, and differs in the last bit.
+
+It is not being turned off. `-ffp-contract=off` would cost speed on every float
+expression in the game to buy bit-agreement with a machine this port already
+cannot be bit-identical to (different libm, different cast rounding). It is
+recorded here so that "why is the physics one ULP different" is answered
+without another afternoon.
 
 ---
 
