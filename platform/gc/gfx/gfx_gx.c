@@ -2715,9 +2715,27 @@ static void gfx_draw_rect(f32 x0, f32 y0, f32 x1, f32 y1, GXColor c) {
  */
 void gc_gfx_init(void) {
     GXRModeObj *rmode = gc_video_mode();
+    /*
+     * GC_CLEARTINT: what the EFB holds where nothing is drawn.
+     *
+     * Black is right for shipping and useless for diagnosis -- a pixel nothing
+     * covered and a pixel drawn black are the same pixel. Magenta separates
+     * them in one glance, and on a frame where everything is covered it
+     * changes nothing at all, so a build with it on is safe to play.
+     *
+     * Added 2026-09-07 for a hairline black rule across the middle of the
+     * screen, present on every screen the user looked at. If it turns magenta
+     * it is a gap in what is drawn; if it stays black it is drawn black, or it
+     * happens after the copy and belongs to the video path.
+     */
     GXColor background = { 0, 0, 0, 0xFF };
     f32 yscale;
     u32 xfbHeight;
+
+#if GC_CLEARTINT
+    background.r = 0xFF;
+    background.b = 0xFF;
+#endif
 
     sFifo = memalign(32, GX_FIFO_SIZE);
     if (sFifo == NULL) {
