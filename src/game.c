@@ -509,7 +509,24 @@ void level_load(s32 levelId, s32 numberOfPlayers, s32 entranceId, Vehicle vehicl
     set_vehicle_id_for_menu(vehicleId);
     if (gCurrentLevelHeader->race_type == RACETYPE_HUBWORLD) {
         if (settings->worldId - 1 >= 0) {
-            var_s0 = 8 << (settings->worldId + 31);
+            /*
+             * The third of the `<< (x + 31)` shifts, and the one that greeted a
+             * boss with his own defeat line.
+             *
+             * MIPS masks a shift count to five bits, so on the N64 this is
+             * `8 << (worldId - 1)`: CUTSCENE_DINO_DOMAIN_BOSS for world 1,
+             * SHERBET for 2, and so on, with `var_s0 <<= 5` naming the matching
+             * *_BOSS_2 flags. PowerPC gives zero for any count from 32 up, so
+             * var_s0 was 0, `!(cutsceneFlags & 0)` was always true, the `|=` was
+             * a no-op, and cutsceneId was forced to CUTSCENE_ID_UNK_5 on every
+             * load of a RACETYPE_HUBWORLD level once the world had 4 balloons.
+             *
+             * The boss intro levels are RACETYPE_HUBWORLD too -- "TrickyTops Anim
+             * 1" (level 57, race_type 5) is what a boss race loads first -- and
+             * channel 5 there is the dialogue the boss speaks after he beats you.
+             * So Tricky opened the first world with his victory-over-you speech.
+             */
+            var_s0 = MIPS_SHL(8, settings->worldId + 31);
             if (settings->worldId == 5) {
                 if (settings->balloonsPtr[0] >= 47) {
                     if (settings->ttAmulet >= 4) {
