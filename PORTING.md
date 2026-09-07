@@ -149,7 +149,22 @@ and `D_8012A5E8[2]`. Only the checking is conditional; the release binary pays
 **`pool 0` and `tex 0` together are the claim that nothing wrote outside an
 allocation this beat.** A non-zero pool value carries the rule that broke in
 its low byte and the slot in the rest; a non-zero `tex` names the entry, which
-end, and the buffer address.
+end, and the buffer address. The rule numbers, so a log line is readable
+without the source:
+
+| | |
+|---|---|
+| 1 | `curNumSlots` out of range |
+| 2 | `nextIndex` out of range |
+| 3 | negative size |
+| 4 | block outside the pool |
+| 5 | not contiguous with the previous block |
+| 6 | `prevIndex` does not mirror `nextIndex` |
+| 7 | the walk did not terminate |
+
+5 is the one to hope for: it means a store landed in the slot table and the
+table caught it. 4 means a slot's `data` or `size` was smashed. 7 means the
+list was turned into a cycle.
 
 ---
 
