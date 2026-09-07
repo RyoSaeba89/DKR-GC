@@ -136,13 +136,19 @@ written out in full in [`PORTING.md`](PORTING.md):
   before it was tested. `GC_DEBUG` builds print a `collide run:` line saying
   whether that cap was reached anywhere in the session.
 
-**Fixed since v0.5.0, not yet confirmed on console:**
+**Since v0.5.0, not yet confirmed on console:**
 
 - **`interrupts_disable` fell off the end of a non-void function.** It is
   called around every memory-pool operation. Undefined behaviour that devkitPPC
   happens to compile into a harmless early return today; it now returns a
   defined value. Found by reading `src/hasm/math_util.c` against the assembly
   beside it.
+- **Two memory guards.** The crash handler can already report a read or write
+  to an address the machine does not have, but an index that lands *inside*
+  RAM raises no exception and so was unobservable. The heap's slot table is now
+  checked once a second for self-consistency, and every converted texture
+  carries a guard band either side of it. `GC_DEBUG` builds report both on one
+  `guards:` line.
 
 **Not defects, but worth knowing:**
 

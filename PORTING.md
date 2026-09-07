@@ -16,14 +16,19 @@ user's PAL console**: every boss but Wizpig 1 opening with his own defeat
 speech, and driving through the floor on the Tricky spiral. Released as
 `v0.5.0`.
 
-Since that release, the other three `src/hasm/*.c` have been read against their
-assembly -- see the next section. One live defect came out of it
-(`interrupts_disable` falling off the end of a non-void function), fixed and on
-the card, **not yet confirmed on console and not yet released**.
+Since that release, and on the card but **not yet confirmed on console nor
+released**:
 
-On the card: `dkr.dol` md5 `67518d54a9821c9947cc29b8a0c7b6ca` (`GC_DEBUG=1`,
-1 442 336 bytes), `dkr-rel.dol` and `dist/dkr/dkr.dol` md5
-`350f56d4c98fd1e6d55b345934442c40` (`GC_DEBUG=0`, 1 415 872). Both
+- the other three `src/hasm/*.c` read against their assembly, which turned up
+  one live defect -- `interrupts_disable` falling off the end of a non-void
+  function -- now fixed;
+- **the two guards that close `dsi rec`'s blind spot**, which the file has been
+  promising since 2026-09-06: the heap's slot table checked for
+  self-consistency, and a guard band either side of every converted texture.
+
+On the card: `dkr.dol` md5 `413a449e6b53ef2043efde6046c9b925` (`GC_DEBUG=1`,
+1 443 584 bytes), `dkr-rel.dol` and `dist/dkr/dkr.dol` md5
+`e93d115a9f4717e30209ddd864764e73` (`GC_DEBUG=0`, 1 415 968). Both
 `GC_EMBED_ASSETS=0`. **The card is drive `F:` now, not `D:`.**
 
 ### What the confirming run measured, and what it could not
@@ -67,15 +72,13 @@ only half of that lesson.
 **Where to look next, in the absence of a report:**
 - `collide run:` in the heartbeat. `full 0` there is the port's claim that no
   collision test in the whole session was truncated.
-- `dsi rec` in the heartbeat. A blank there is the port's own claim that
-  nothing it exercised indexed outside RAM. Its blind spot is an index that
-  lands *inside* MEM1, which takes no exception at all -- guard patterns
-  around the pool and the texture cache would catch those, and are not built.
-- The rest of `src/hasm/`. `collision.c`, `obj_animate.c`, `obj_shade_fast.c`
-  and `math_util.c` are C reimplementations of handwritten assembly, compiled
-  only off the N64, so **no N64 build has ever executed a line of them**. One
-  of the four has now been diffed against its `.s` and one bug came out. The
-  other three have not.
+- `dsi rec` in the heartbeat, and now `guards:` beside it. The first is the
+  claim that nothing indexed outside RAM; the second is the claim that nothing
+  wrote outside an allocation *inside* it. Between them the out-of-range class
+  is observable in both halves for the first time.
+- All four `src/hasm/*.c` have now been diffed against their assembly. Two
+  carried a defect. The remaining divergences are catalogued below and are
+  deliberate.
 - The `grep` for shifts that can exceed 31 (see `MIPS_SHL`), re-run after any
   update from the decompilation upstream -- with the widened pattern below, not
   the original one. As of v0.5.0 all 123 non-literal shifts in `src/` have been
@@ -83,6 +86,70 @@ only half of that lesson.
 - Loops whose sentinel lies past the end of the array they index, and any
   `[-1]`. Two of those turned up in `waves.c` alone, and `nm -n` on the ELF is
   the only way to see them.
+
+---
+
+## Closing `dsi rec`'s blind spot: two guards (2026-09-07)
+
+`dsi rec` blank in the heartbeat is the port's claim that nothing it ran
+indexed outside RAM, and it has a hole it cannot close by construction: **an
+index that lands *inside* MEM1 raises no exception at all.** That hole is where
+the four all-white textures of 2026-09-06 lived, and it is why "a wild store in
+the renderer" survived two days as a theory with no way to test it. This is the
+instrument the file has been promising since then.
+
+### The heap's slot table, checked rather than reported
+
+`gc_pool_report` says how full the heap is. `gc_pool_check` says whether the
+heap still *describes itself*. The densest target in MEM1 is the 1600-entry
+slot table at the bottom of the pool, and a wild store into it is invisible
+until an allocation hands out a pointer into someone else's buffer.
+
+Five invariants, each read out of `src/memory.c` rather than assumed: the walk
+terminates within `maxNumSlots` and stays in range; no negative size; every
+block inside the pool; `prevIndex` mirrors `nextIndex`; and **consecutive
+entries are exactly contiguous.** That last one is the reason the check is
+worth running. `mempool_slot_assign` splits with `new->data = old->data + size`
+and `new->size = oldSize - size`; `mempool_slot_clear` merges with
+`slot->size += nextSlot->size`; `mempool_alloc_fixed` only ever calls
+`mempool_slot_assign`. None of them can leave a gap or an overlap, so
+contiguity is a checksum over the whole table that one wrong halfword breaks.
+
+**`slots[i].index == i` is not among them, and nearly was.** It is the obvious
+invariant to reach for -- `mempool_init` sets index to i for every slot -- and
+it is false: `mempool_slot_clear` reuses the field as a free list of recycled
+slot numbers (`slots[--curNumSlots].index = nextIndex`) and
+`mempool_slot_assign` reads it back. Asserting it would have shipped a check
+that fires on a healthy machine, which is worse than no check at all. It was
+caught by reading the allocator before writing the checker, not after.
+
+One number is printed rather than asserted: the walk's step count against
+`pool->curNumSlots`. They should agree, but that is an inference about
+`mempool_alloc_fixed` as well as the two common paths, so the first run gets to
+say so before it becomes a rule.
+
+### Guard bands around every converted texture
+
+Thirty-two bytes either side of each texture-cache buffer, filled with a
+pattern derived from the buffer's own address so a band that was `memcpy`'d
+from somewhere else does not pass. All 256 entries are walked once a beat, and
+a broken band is repaired after it is reported so the next beat describes the
+next overrun rather than this one for ever.
+
+**The bands are written in every build, not only `GC_DEBUG` ones.** A guarded
+build and an unguarded one would place their allocations differently, and this
+port has been bitten twice by depending on where things land -- `D_800E30E4[-1]`
+and `D_8012A5E8[2]`. Only the checking is conditional; the release binary pays
+96 bytes and the same layout.
+
+### What the heartbeat says
+
+    guards: pool 0 (612/612 slots walked) | tex 0
+
+**`pool 0` and `tex 0` together are the claim that nothing wrote outside an
+allocation this beat.** A non-zero pool value carries the rule that broke in
+its low byte and the slot in the rest; a non-zero `tex` names the entry, which
+end, and the buffer address.
 
 ---
 

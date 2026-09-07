@@ -115,6 +115,20 @@ extern u32 gGcColSegMax;
 extern u32 gGcColSegFull;
 /* The same four, never reset, so a wrapped log still carries the worst case of
  * the whole session rather than of its last twenty-three seconds. */
+/* The two guards that answer what `dsi rec` cannot: an index that lands inside
+ * MEM1 raises no exception. gc_pool_check walks the heap's slot table and
+ * returns 0 when it still describes itself; gc_tex_guard_check walks the
+ * bands either side of every converted texture. Both defined under GC_DEBUG,
+ * in gc_crash.c and gfx_gx.c. */
+u32 gc_pool_check(void);
+extern u32 gGcPoolWalked;
+extern u32 gGcPoolCounted;
+void gc_tex_guard_check(void);
+extern u32 gGcTexGuardBad;
+extern u32 gGcTexGuardEntry;
+extern u32 gGcTexGuardWhich;
+extern u32 gGcTexGuardAddr;
+
 extern u32 gGcColCandMaxRun;
 extern u32 gGcColSegMaxRun;
 extern u32 gGcColCandFullRun;

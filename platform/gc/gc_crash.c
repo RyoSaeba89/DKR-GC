@@ -193,6 +193,113 @@ void gc_pool_report(u32 *slotsUsed, u32 *slotsMax, u32 *freeBytes, u32 *largestF
     *usedBytes = used;
 }
 
+/*
+ * The pool's slot table, checked rather than reported.
+ *
+ * gc_pool_report says how full the heap is. This says whether the heap still
+ * describes itself, which is a different question and the one `dsi rec` cannot
+ * answer: an index that lands inside MEM1 takes no exception, and the densest
+ * target in MEM1 is the 1600-entry slot table sitting at the bottom of the
+ * pool. A wild store into it is invisible until an allocation hands out a
+ * pointer into someone else's buffer.
+ *
+ * Five invariants, each read out of src/memory.c rather than assumed:
+ *
+ *  - the walk terminates within maxNumSlots steps and only visits indices in
+ *    range;
+ *  - no slot has a negative size;
+ *  - every block lies inside the pool;
+ *  - `prevIndex` mirrors `nextIndex`, which mempool_slot_assign and
+ *    mempool_slot_clear both maintain;
+ *  - **consecutive entries are exactly contiguous.** mempool_slot_assign
+ *    splits a free slot with `new->data = old->data + size` and
+ *    `new->size = oldSize - size`; mempool_slot_clear merges with
+ *    `slot->size += nextSlot->size`. Neither leaves a gap or an overlap, ever.
+ *    That makes contiguity a checksum over the whole table which a single
+ *    wrong halfword breaks, and it is the reason this check is worth running.
+ *
+ * `slots[i].index == i` is NOT among them, and that is worth writing down
+ * because it is the obvious one to reach for and it is false. mempool_init
+ * does set index to i for every slot, but mempool_slot_clear then reuses the
+ * field as a free list of recycled slot numbers -- `slots[--curNumSlots].index
+ * = nextIndex` -- and mempool_slot_assign reads it back. Asserting it would
+ * have cost a hardware run.
+ *
+ * Returns 0 when the table is sound. Otherwise the low byte says which
+ * invariant broke and the rest carries the slot it broke at, so one number in
+ * the heartbeat is enough to start from.
+ */
+#define POOLCHK_OK 0
+#define POOLCHK_COUNT 1   /* curNumSlots out of range */
+#define POOLCHK_INDEX 2   /* nextIndex out of range */
+#define POOLCHK_SIZE 3    /* negative size */
+#define POOLCHK_BOUNDS 4  /* block outside the pool */
+#define POOLCHK_GAP 5     /* not contiguous with the previous block */
+#define POOLCHK_PREV 6    /* prevIndex does not mirror nextIndex */
+#define POOLCHK_LOOP 7    /* the walk did not terminate */
+
+/* How many slots the walk actually visited, against pool->curNumSlots. These
+ * should be equal -- every path that links a slot increments the count and
+ * every path that unlinks one decrements it -- but that is an inference about
+ * mempool_alloc_fixed as well as the two common paths, so it is printed rather
+ * than asserted until a run says it holds. */
+u32 gGcPoolWalked;
+u32 gGcPoolCounted;
+
+u32 gc_pool_check(void) {
+    extern MemoryPool gMemoryPools[POOL_COUNT];
+    const MemoryPool *pool = &gMemoryPools[POOL_MAIN];
+    const MemoryPoolSlot *slots = pool->slots;
+    const u8 *poolBase, *poolEnd;
+    const u8 *expect = NULL;
+    s32 i = 0;
+    s32 prev = MEMSLOT_NONE;
+    u32 steps = 0;
+
+    gGcPoolWalked = 0;
+    gGcPoolCounted = 0;
+
+    if (slots == NULL || pool->maxNumSlots == 0) {
+        return POOLCHK_OK;
+    }
+    gGcPoolCounted = (u32) pool->curNumSlots;
+    if (pool->curNumSlots < 1 || pool->curNumSlots > pool->maxNumSlots) {
+        return POOLCHK_COUNT;
+    }
+
+    poolBase = (const u8 *) slots;
+    poolEnd = poolBase + pool->size;
+
+    while (i != MEMSLOT_NONE) {
+        const MemoryPoolSlot *sl;
+
+        if (steps++ > (u32) pool->maxNumSlots) {
+            return POOLCHK_LOOP | ((u32) i << 8);
+        }
+        if (i < 0 || i >= pool->maxNumSlots) {
+            return POOLCHK_INDEX | ((u32) i << 8);
+        }
+        sl = &slots[i];
+        if (sl->size < 0) {
+            return POOLCHK_SIZE | ((u32) i << 8);
+        }
+        if (sl->data < poolBase || sl->data + sl->size > poolEnd) {
+            return POOLCHK_BOUNDS | ((u32) i << 8);
+        }
+        if (sl->prevIndex != prev) {
+            return POOLCHK_PREV | ((u32) i << 8);
+        }
+        if (expect != NULL && sl->data != expect) {
+            return POOLCHK_GAP | ((u32) i << 8);
+        }
+        expect = sl->data + sl->size;
+        prev = i;
+        i = sl->nextIndex;
+    }
+    gGcPoolWalked = steps;
+    return POOLCHK_OK;
+}
+
 #endif
 
 /* ---- the crash record ---------------------------------------------------- */

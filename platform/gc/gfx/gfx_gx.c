@@ -1058,12 +1058,100 @@ typedef struct {
     u32 bytes;    /* what the current texture occupies */
     u32 capacity; /* what the buffer can hold, so it need not be reallocated */
     void *texels;
+    void *block; /* what memalign returned: texels minus the leading guard */
     GXTexObj obj;
     BOOL valid;
 } TexCacheEntry;
 
 static TexCacheEntry sTexCache[TEX_CACHE_SIZE];
 static u32 sTexCacheNext;
+
+/*
+ * Guard bands either side of every converted texture.
+ *
+ * `dsi rec` in the heartbeat is the port's claim that nothing it ran indexed
+ * outside RAM, and it has a blind spot it cannot close: an index that lands
+ * *inside* MEM1 takes no exception at all. On 2026-09-07 four textures came
+ * back all-white at four fixed pool addresses and there was no way to tell a
+ * converter writing past its buffer from an asset that arrived wrong. This is
+ * the difference, made observable.
+ *
+ * Thirty-two bytes each side keeps the 32-byte alignment GX and DCFlushRange
+ * both want, and costs 16 KB across the whole cache. The pattern is derived
+ * from the buffer's own address, so a band that was memcpy'd from somewhere
+ * else does not pass.
+ *
+ * The bands are written in every build, not just GC_DEBUG ones: a guarded
+ * build and an unguarded one would place their allocations differently, and
+ * this port has already been bitten twice by depending on where the linker and
+ * the allocator put things. Only the *checking* is conditional.
+ */
+#define TEX_GUARD 32
+
+static void tex_guard_fill(u8 *block, u32 bytes) {
+    u32 seed = (u32) block;
+    u32 i;
+
+    for (i = 0; i < TEX_GUARD; i += 4) {
+        u32 v = seed ^ (0xA5C3F00Du + i);
+
+        *(u32 *) (block + i) = v;
+        *(u32 *) (block + TEX_GUARD + bytes + i) = ~v;
+    }
+}
+
+#ifdef GC_DEBUG
+/* Returns 0 when both bands are intact, 1 for the head, 2 for the tail. */
+static int tex_guard_broken(const u8 *block, u32 bytes) {
+    u32 seed = (u32) block;
+    u32 i;
+
+    for (i = 0; i < TEX_GUARD; i += 4) {
+        u32 v = seed ^ (0xA5C3F00Du + i);
+
+        if (*(const u32 *) (block + i) != v) {
+            return 1;
+        }
+        if (*(const u32 *) (block + TEX_GUARD + bytes + i) != ~v) {
+            return 2;
+        }
+    }
+    return 0;
+}
+
+/*
+ * Walked once a beat. `tex_guard` in the heartbeat is a claim about the whole
+ * cache, so it has to visit every entry that owns a buffer, not just the valid
+ * ones -- a buffer kept for reuse is still memory something can run into.
+ */
+u32 gGcTexGuardBad;
+u32 gGcTexGuardEntry;
+u32 gGcTexGuardWhich;
+u32 gGcTexGuardAddr;
+
+void gc_tex_guard_check(void) {
+    u32 i;
+
+    for (i = 0; i < TEX_CACHE_SIZE; i++) {
+        const TexCacheEntry *e = &sTexCache[i];
+        int bad;
+
+        if (e->block == NULL || e->capacity == 0) {
+            continue;
+        }
+        bad = tex_guard_broken((const u8 *) e->block, e->capacity);
+        if (bad != 0) {
+            gGcTexGuardBad++;
+            gGcTexGuardEntry = i;
+            gGcTexGuardWhich = (u32) bad;
+            gGcTexGuardAddr = (u32) e->texels;
+            /* Repaired, so the next beat reports the next overrun rather than
+             * this one for ever. */
+            tex_guard_fill((u8 *) e->block, e->capacity);
+        }
+    }
+}
+#endif
 
 /* Expands a 5-bit channel so that full scale comes out full scale. */
 static u8 expand5(u32 v) {
@@ -1535,14 +1623,22 @@ static GXTexObj *texture_get(u32 addr, u32 fmt, u32 siz, u32 width, u32 height, 
      * reallocating a different size on every miss fragments libogc's arena for
      * no gain -- the entry is about to be overwritten either way.
      */
-    if (e->texels != NULL && e->capacity < bytes) {
-        free(e->texels);
+    if (e->block != NULL && e->capacity < bytes) {
+        free(e->block);
+        e->block = NULL;
         e->texels = NULL;
         e->capacity = 0;
     }
-    if (e->texels == NULL) {
-        e->texels = memalign(32, bytes);
-        e->capacity = (e->texels != NULL) ? bytes : 0;
+    if (e->block == NULL) {
+        e->block = memalign(32, bytes + 2 * TEX_GUARD);
+        if (e->block != NULL) {
+            e->texels = (u8 *) e->block + TEX_GUARD;
+            e->capacity = bytes;
+            tex_guard_fill((u8 *) e->block, bytes);
+        } else {
+            e->texels = NULL;
+            e->capacity = 0;
+        }
     }
     if (e->texels == NULL) {
 #ifdef GC_DEBUG

@@ -295,6 +295,27 @@ static void gc_heartbeat(u32 ticks) {
     gGcColCandFull = 0;
     gGcColSegMax = 0;
     gGcColSegFull = 0;
+    /*
+     * The two guards. `pool 0` and `tex 0` together are the port's claim that
+     * nothing wrote outside an allocation this beat -- the half of the
+     * out-of-range class that takes no exception, and so leaves `dsi rec`
+     * blank however wrong it is.
+     */
+    {
+        u32 chk = gc_pool_check();
+
+        gc_tex_guard_check();
+        gc_log("\n           guards: pool %u (%u/%u slots walked)", (unsigned) chk,
+               (unsigned) gGcPoolWalked, (unsigned) gGcPoolCounted);
+        if (chk != 0) {
+            gc_log(" (rule %u at slot %u)", (unsigned) (chk & 0xFF), (unsigned) (chk >> 8));
+        }
+        gc_log(" | tex %u", (unsigned) gGcTexGuardBad);
+        if (gGcTexGuardBad != 0) {
+            gc_log(" (entry %u %s, buf %08x)", (unsigned) gGcTexGuardEntry,
+                   gGcTexGuardWhich == 1 ? "head" : "tail", (unsigned) gGcTexGuardAddr);
+        }
+    }
     gc_crash_log_recoveries();
     gc_log("\n           aram reads %u, slow %u, contended %u",
            (unsigned) gGcAssetReads, (unsigned) gGcAssetSlow,
