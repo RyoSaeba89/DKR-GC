@@ -136,11 +136,6 @@ mechanism that is written out in full in [`PORTING.md`](PORTING.md)):
 
 **Open:**
 
-- **The intro does not play on a new game.** No defect found by reading: the
-  path is data-driven, the cinematic cannot be skipped by input, and the
-  port's EEPROM emulation is sound. Three log marks now say which of the two
-  possible shapes it is — the branch not taken, or the sequence ending on its
-  first frame.
 - Time Trial ghosts save to the emulated Controller Pak, but the full
   save-power-off-reload path has never been walked end to end.
 - `src/hasm/obj_animate.c`, `obj_shade_fast.c` and `math_util.c` are C

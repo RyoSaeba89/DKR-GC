@@ -12,9 +12,9 @@ what is left.
 ## WHAT IS LEFT -- read this first (2026-09-07, late)
 
 **Two defects fixed and on the card, neither yet confirmed on console.**
-`dkr.dol` md5 `ab7010bbe1f43f70ad883989321b6714` (`GC_DEBUG=1`, 1 442 816
-bytes), `dkr-rel.dol` md5 `9147e92dd3d877c73a2a891745c0a9f0` (`GC_DEBUG=0`,
-1 416 576 bytes). Both `GC_EMBED_ASSETS=0`. The card is drive **F:** now, not
+`dkr.dol` md5 `7d7f4b154c98bd7bc837538e4df9755f` (`GC_DEBUG=1`, 1 441 984
+bytes), `dkr-rel.dol` md5 `f8f6aaea3c509442718b4bc8c1505504` (`GC_DEBUG=0`,
+1 415 744 bytes). Both `GC_EMBED_ASSETS=0`. The card is drive **F:** now, not
 D:.
 
 1. **Every boss but Wizpig 1 greeted the player with his own defeat speech**,
@@ -199,70 +199,40 @@ Everything the user named, checked site by site:
 
 ---
 
-## The new-game intro: instrumented, not diagnosed (2026-09-07)
+## The new-game intro: NOT a defect (2026-09-07)
 
-The user reports the intro does not play on a new game. **I could not find a
-defect by reading, and the honest thing is to say so and ship the instrument
-rather than a plausible fix.**
+Reported as not playing on a new game, and **confirmed working on console by
+the user** before anything was changed for it. Nothing to fix.
 
-What is established, all of it offline:
+Three `gc_logfile_mark` lines had been added to separate the two shapes the
+failure could have taken; they are removed again. `gc_logfile_mark` costs an
+open, an append and a close on the card, and `menu_cinematic_init` runs after
+every race as well as at the intro, so an instrument left there for a defect
+that does not exist is a repeated card write on the hot path -- which is the
+exact hazard that corrupted the FAT on 2026-09-04.
+
+The reading was not wasted; it is what the file keeps:
 
 - The intro is sequence 0 of `ASSET_MISC_CINEMATIC_RACE`, whose twenty-two
-  bytes decode to `level 36, players 0, cutscene 15` followed by the `-1`
-  terminator. Level 36 is "Sequence Area".
-- It is reached from `menu_file_select_loop`, and only when
-  `settings->newGame` is true at the moment the file-select transition passes
-  35 frames.
+  bytes decode to `level 36, players 0, cutscene 15` then the `-1` terminator.
+  Level 36 is "Sequence Area".
 - `cinematic_start` is called with both skip flags zero, so **the intro cannot
   be skipped by a button press**. It ends on one condition only:
-  `func_800214C4()` going non-zero, which is `D_8011AD22[1 - D_8011AD21]`, the
-  count of animation objects that reached an end marker in the previous
-  `obj_update`.
-- `level_load` does not mistreat it. `ZERO_PLAYERS` is `-1` and `ONE_PLAYER` is
-  `0`, so a `players 0` entry leaves `numPlayers == 0`, the race type is *not*
-  rewritten to `RACETYPE_CUTSCENE_1`, and level 36 stays a hubworld — but the
-  block that would then bite needs four balloons and a new game has none.
+  `func_800214C4()` going non-zero, which counts animation objects that reached
+  an end marker in the previous `obj_update`.
+- **`ZERO_PLAYERS` is `-1` and `ONE_PLAYER` is `0`.** A `players 0` entry
+  therefore leaves `numPlayers == 0`, the race type is *not* rewritten to
+  `RACETYPE_CUTSCENE_1`, and level 36 stays a hubworld all the way through
+  `level_load`. That is the same door the boss defect came through; the intro
+  escapes it only because the block needs four balloons and a new game has
+  none. Worth knowing before touching that function again.
 - The port's EEPROM emulation is sound: `save_load` is `sLoaded`-guarded, so
   nothing re-reads over a fresh erase, and every write goes straight to the
   card.
 
-That leaves exactly two shapes, and they look identical from the sofa:
-
-1. the branch is never taken, because `settings->newGame` was already false;
-2. it is taken, and `func_800214C4()` is non-zero on the first frame, so the
-   sequence steps past its only entry and returns immediately.
-
-Three `gc_logfile_mark` lines separate them in one run — `cine: file select
-done, file N, newGame X`, `cine: start level L players P cutscene C`, and
-`cine: sequence ended after N frames`. They are `gc_logfile_mark`, so they
-appear in the release build too, which is what the reporting run was.
-
----
-
-
-### The grep was too narrow, and this is the corrected one
-
-The pattern written on 2026-09-07 was
-
-    grep -rnE "<<[ ]*\(?[a-zA-Z_]+[ ]*\+[ ]*(3[0-9]|[4-9][0-9])" src/*.c
-
-and it found `1 << (j + 31)` and `CUTSCENE_DINO_DOMAIN_KEY << (var_s0 + 31)`
-and missed this one, because `[a-zA-Z_]+` does not match `settings->worldId`.
-Use:
-
-    grep -rnE "<<[[:space:]]*\(?[^;,)]*\+[[:space:]]*(3[0-9]|[4-9][0-9])" \
-        src/ include/ --include=*.c --include=*.h
-
-That returns `game.c:512` and the `MIPS_SHL` comment in `macros.h`, and
-nothing else. **A grep that finds two of three is a grep that closes an
-investigation early**; the fix for the class is only as good as the pattern
-that enumerates it.
-
-Right shifts were checked too and are clean. `settings->worldId` is a `u8`, so
-`worldId - 1` is `-1` in the central area and `trophies >> -2` reads 30 bits on
-MIPS and gives zero on PowerPC -- but `trophies` is a `u16`, so both are zero.
-`objects.c:2007` and `object_functions.c:604` are the two sites; neither needs
-a change.
+**The rule this reinforces: confirm the symptom before building the
+instrument.** A build and a section of this file went to a defect that was
+never there, and the user had already seen it work.
 
 ---
 
