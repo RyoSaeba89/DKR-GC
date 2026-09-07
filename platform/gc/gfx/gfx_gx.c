@@ -3747,9 +3747,20 @@ static void gfx_triangles(u32 w0, u32 w1) {
  *   s, t       start coordinates, 10.5 fixed point
  *   dsdx, dtdy texel step per pixel, 5.10 fixed point
  *
- * The rectangle includes its lower-right pixel, so the quad runs one past it,
- * and the texture coordinate at that far corner follows from the step rather
- * than from a second pair of coordinates.
+ * The far edge is EXCLUSIVE, except in G_CYC_COPY where the RDP draws one more
+ * pixel in each direction. This file had it inclusive always, and that is one
+ * texel, not one pixel: measured on Taj's vehicle dialogue on 2026-09-07, a
+ * glyph arrives as `settile` line4 tmem0 with maskS = maskT = 4 and
+ * `tilesize` lrs = lrt = 60 -- a 16x16 texture -- drawn into (73,22)-(89,38)
+ * with s = t = 0 and dsdx = dtdy = 1.0. Sixteen pixels across sixteen texels
+ * is u = [0, 1] exactly. Counting seventeen made it [0, 1.0625], so the last
+ * column and the last row sampled past the edge, and cms = cmt = 0 with
+ * maskS = 4 means the tile REPEATs: the left edge of every glyph reappeared
+ * down its right side. That is the artefact on the right of the text.
+ *
+ * COPY mode keeps the old arithmetic exactly. Nothing measured uses it, and a
+ * path with no evidence behind it should not be rewritten on the strength of
+ * the one next to it.
  */
 static void gfx_tex_rect(u32 w0, u32 w1, u32 stWord, u32 dWord) {
     f32 lrx = (f32) ((w0 >> 12) & 0xFFF) / 4.0f;
@@ -3766,7 +3777,12 @@ static void gfx_tex_rect(u32 w0, u32 w1, u32 stWord, u32 dWord) {
     GXTexObj *tex;
     f32 w, h, u0, v0, u1, v1, uScale, vScale, uOff, vOff;
 
-    if (lrx < ulx || lry < uly) {
+    BOOL copyMode = ((sOtherModeH >> 20) & 3) == 2; /* G_CYC_COPY */
+
+    w = lrx - ulx + (copyMode ? 1.0f : 0.0f);
+    h = lry - uly + (copyMode ? 1.0f : 0.0f);
+
+    if (w <= 0.0f || h <= 0.0f) {
 #ifdef GC_DEBUG
         gGcTrZeroArea++;
 #endif
@@ -3803,9 +3819,6 @@ static void gfx_tex_rect(u32 w0, u32 w1, u32 stWord, u32 dWord) {
     }
     gGcTrDrawn++;
 #endif
-
-    w = lrx - ulx + 1.0f;
-    h = lry - uly + 1.0f;
 
     uScale = sTexScaleS * tile_shift_scale(t->shifts);
     vScale = sTexScaleT * tile_shift_scale(t->shiftt);
@@ -3848,8 +3861,8 @@ static void gfx_tex_rect(u32 w0, u32 w1, u32 stWord, u32 dWord) {
     sCoverTexAddr = img.addr;
     sCoverFmtSiz = (t->fmt << 2) | t->siz;
     cover_note(3, (s32) (ulx * 1000.0f / sGameWidth), (s32) (uly * 1000.0f / sGameHeight),
-               (s32) ((lrx + 1.0f) * 1000.0f / sGameWidth),
-               (s32) ((lry + 1.0f) * 1000.0f / sGameHeight), 0xFFFFFFFFu);
+               (s32) ((ulx + w) * 1000.0f / sGameWidth),
+               (s32) ((uly + h) * 1000.0f / sGameHeight), 0xFFFFFFFFu);
 #endif
     gfx_set_textured_state(tex);
     load_2d_projection();
