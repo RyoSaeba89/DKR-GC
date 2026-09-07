@@ -320,19 +320,28 @@ static const char *exception_name(u32 n) {
  * library being usable on a machine that has just faulted, and hex digits and
  * a decimal integer are all it needs.
  */
+/* Both channels, and both polled: a RAM ring the log flushes later, and
+ * libogc's framebuffer console through write() rather than printf -- same
+ * reason. The console is what makes the crash path testable at all: under
+ * Dolphin there is no SD card, so without it the report would exist only on
+ * hardware, and an instrument that only exists where it is needed cannot be
+ * validated before it is needed. GC_CRASHTEST exercises it.
+ *
+ * The numbers go through here too since 2026-09-07. They used to reach the log
+ * only, which meant the console half of the report read `*** exception  (DSI
+ * (bad data address)) at  ***` -- every word of it and not one address. */
+static void crash_out(const char *s, u32 n) {
+    gc_logfile_write(s, n);
+    write(1, s, n);
+}
+
 static void crash_puts(const char *s) {
     u32 n = 0;
 
     while (s[n] != 0) {
         n++;
     }
-    gc_logfile_write(s, n);
-    /* And to the console, through write() rather than printf -- same reason.
-     * This is what makes the crash path testable at all: under Dolphin there is
-     * no SD card, so without this the report would exist only on hardware, and
-     * an instrument that only exists where it is needed cannot be validated
-     * before it is needed. GC_CRASHTEST exercises it. */
-    write(1, s, n);
+    crash_out(s, n);
 }
 
 static void crash_hex(u32 v) {
@@ -344,7 +353,7 @@ static void crash_hex(u32 v) {
         out[i] = kDigits[v & 0xF];
         v >>= 4;
     }
-    gc_logfile_write(out, 8);
+    crash_out(out, 8);
 }
 
 static void crash_dec(s32 v) {
@@ -359,7 +368,7 @@ static void crash_dec(s32 v) {
     if (v < 0) {
         out[--i] = '-';
     }
-    gc_logfile_write(out + i, (u32) ((int) sizeof(out) - i));
+    crash_out(out + i, (u32) ((int) sizeof(out) - i));
 }
 
 /* The human-readable half: written into dkr.log, which is where the user will
@@ -487,12 +496,26 @@ static BOOL record_to_card(const GcCrashRecord *rec) {
  */
 static volatile BOOL sCrashPending;
 
-static void write_report(const GcCrashRecord *rec) {
-    report_to_log(rec);
+
+/*
+ * The report is written in two halves, and the split is not cosmetic.
+ *
+ * report_to_log only appends to the log's RAM ring, which is safe with
+ * interrupts off; flush_report is the half that touches the card, and that
+ * half needs MSR[EE]. Writing everything into the ring first means a machine
+ * that dies during the card write still has the complete report in memory --
+ * and, more to the point, has already emitted it to the polled console.
+ */
+static void flush_report(const GcCrashRecord *rec) {
     gc_logfile_flush_unlocked();
     if (record_to_card(rec) && gc_logfile_active()) {
         sCrashPending = FALSE;
     }
+}
+
+static void write_report(const GcCrashRecord *rec) {
+    report_to_log(rec);
+    flush_report(rec);
 }
 
 void gc_crash_poll(void) {
@@ -508,130 +531,138 @@ void __real_c_default_exceptionhandler(frame_context *ctx);
 
 void __wrap_c_default_exceptionhandler(frame_context *ctx) {
     static volatile BOOL sInHandler;
+    /*
+     * The first fault's frame, kept whole.
+     *
+     * On 2026-09-06 the console showed `SRR0 80007030` -- `li r4,15`, four
+     * instructions after the mtmsr below, an instruction that cannot fault. So
+     * the screen was describing a *second*, asynchronous exception taken the
+     * moment MSR[EE] went back on, and the first fault's SRR0/SRR1/GPRs -- the
+     * only things that name the wild store -- were gone. DAR and DSISR
+     * survived only because an external interrupt writes neither.
+     *
+     * A copy of the frame costs 600-odd bytes of BSS and makes that
+     * unrepeatable: whatever happens afterwards, libogc's dump is handed the
+     * frame of the fault that started it. It reads every register it prints
+     * out of that struct (disassembled: r31 is the frame throughout) and only
+     * DAR/DSISR from the SPRs, which are stale-but-correct in exactly this
+     * case.
+     */
+    static frame_context sFirstCtx;
     GcCrashRecord *rec = &sRecord;
     u32 msr;
     u32 i;
 
     /*
-     * Re-entrancy. If writing the report faults, the vector runs again and we
-     * would loop forever producing nothing. One flag, and the second time
-     * through we go straight to libogc's dump, which touches no filesystem.
+     * Re-entrancy. The second time through we write nothing -- the card path
+     * is what faults -- but we do not show the second fault either.
      */
-    if (!sInHandler) {
-        sInHandler = TRUE;
-
-        memset(rec, 0, sizeof(*rec));
-        rec->magic = CRASH_MAGIC;
-        rec->version = CRASH_VERSION;
-        rec->nExcept = ctx->nExcept;
-        rec->srr0 = ctx->srr0;
-        rec->srr1 = ctx->srr1;
-        rec->cr = ctx->cr;
-        rec->lr = ctx->lr;
-        rec->ctr = ctx->ctr;
-        rec->xer = ctx->xer;
-        rec->msr = ctx->msr;
-        rec->dabr = ctx->dabr;
-        /* Not in frame_context, and still valid: the vector routine has not
-         * executed a load or store that would overwrite them. */
-        rec->dsisr = mfspr(18); /* DSISR */
-        rec->dar = mfspr(19);   /* DAR: the address the access faulted on */
-
-        for (i = 0; i < 32; i++) {
-            rec->gpr[i] = ctx->gpr[i];
-        }
-        for (i = 0; i < 3; i++) {
-            rec->objTrace[i] = gObjectStackTrace[i];
-        }
-        capture_stack(rec, ctx->gpr[1]);
-
-        /*
-         * Interrupts back on before touching the card, and this is the whole
-         * reason the first hardware crash produced an empty log.
-         *
-         * A PowerPC exception clears MSR[EE], and libogc's vector never puts it
-         * back -- it does not need to, because everything c_default_exception-
-         * handler does (kprintf to a framebuffer console, SI_Sync, PAD_Sync,
-         * udelay) is polled. Writing a file is not: libfat takes an LWP mutex
-         * per partition, newlib's fopen allocates under another, and the SD
-         * card's EXI transfers complete on an interrupt. With EE clear all
-         * three either fail or never complete, and the first hardware run
-         * showed exactly that -- a log that stopped at "boot: game running"
-         * with no CRASH block and no dkr.crash beside it.
-         *
-         * The risk this takes is real and worth naming: with interrupts on, the
-         * scheduler can run other threads while this one is inside the handler,
-         * on a machine that has already faulted. That is acceptable because the
-         * alternative measured out at zero information, and because the threads
-         * that keep running (boot, audio) are the ones whose output we want.
-         */
-        /* No more locking on the log: see gc_logfile_set_crash_mode. */
-        gc_logfile_set_crash_mode();
-
-        /*
-         * Interrupts on, and the FPU on with them.
-         *
-         * A PowerPC exception leaves MSR[FP] clear and libogc's vector does not
-         * restore it. Anything that touches a floating-point register from here
-         * -- and newlib's vsnprintf does, whatever the format string says --
-         * takes a second exception that overwrites SRR0/SRR1 with its own. That
-         * is exactly what happened on hardware for four runs: the screen showed
-         * `Exception (Floating Point) occurred!` inside _svfprintf_r inside
-         * this function, the original fault's address was lost, and the log
-         * stayed empty. The report itself is written without printf now (see
-         * crash_puts), so this is the belt to that pair of braces.
-         *
-         * Interrupts stay on so the boot thread can still run gc_crash_poll:
-         * libogc's dump never returns, it loops polling the pad, so with them
-         * off nothing else would ever run again.
-         */
-        msr = mfmsr();
-        mtmsr(msr | MSR_FP | MSR_EE);
-
-        /*
-         * A marker first, flushed on its own. If the machine dies during the
-         * report itself, the log still says the handler ran and which
-         * exception it was -- which is the difference between "the crash
-         * handler does not work" and "the crash handler could not finish".
-         */
-        /* A marker first, flushed on its own, so that even a machine that dies
-         * during the report itself leaves the exception and its address behind. */
-        crash_puts("\n*** exception ");
-        crash_dec((s32) rec->nExcept);
+    if (sInHandler) {
+        crash_puts("\n*** second exception ");
+        crash_dec((s32) ctx->nExcept);
         crash_puts(" (");
-        crash_puts(exception_name(rec->nExcept));
+        crash_puts(exception_name(ctx->nExcept));
         crash_puts(") at ");
-        crash_hex(rec->srr0);
-        crash_puts(" ***\n");
-        gc_logfile_flush();
-
-        sCrashPending = TRUE;
-        write_report(rec);
-
-        /*
-         * Interrupts off again before libogc takes the screen -- and this is a
-         * correction of a correction, so it is worth saying why twice.
-         *
-         * They were first left on so that gc_crash_poll on the boot thread
-         * could write the report if this handler could not. That reasoning was
-         * sound while the handler was unreliable, and it stopped being sound
-         * the moment the handler was fixed (MSR[FP] above, no printf on the
-         * report path). What it cost, meanwhile, was the evidence: libogc's
-         * dump never returns, it loops polling the pad, so with interrupts on
-         * every other thread keeps running on a machine that has already
-         * faulted -- and the *next* exception draws its own dump over this one.
-         *
-         * That is exactly what the user photographed: an `Exception
-         * (Interrupt)` in the framebuffer console, on the game thread, while
-         * `DAR` still held `A4600010` from the DSI that had actually started
-         * all this. One crash, one report, nothing running afterwards to
-         * overwrite it.
-         *
-         * FP stays enabled: libogc's own handler is about to format a screenful
-         * of registers.
-         */
-        mtmsr(msr | MSR_FP);
+        crash_hex(ctx->srr0);
+        crash_puts(" -- the screen below is the FIRST fault ***\n");
+        __real_c_default_exceptionhandler(&sFirstCtx);
+        return;
     }
+    sInHandler = TRUE;
+
+    /*
+     * MSR[FP] on before anything else, and this is the first thing the handler
+     * does for a reason. A PowerPC exception leaves it clear, libogc's vector
+     * does not restore it, and any float touched from here -- a struct copy
+     * gcc decides to do with lfd/stfd, newlib's vsnprintf whatever the format
+     * string -- takes a second exception. MSR[EE] deliberately stays OFF: see
+     * below.
+     */
+    msr = mfmsr();
+    mtmsr(msr | MSR_FP);
+
+    for (i = 0; i < sizeof(sFirstCtx) / sizeof(u32); i++) {
+        ((u32 *) &sFirstCtx)[i] = ((const u32 *) ctx)[i];
+    }
+
+    memset(rec, 0, sizeof(*rec));
+    rec->magic = CRASH_MAGIC;
+    rec->version = CRASH_VERSION;
+    rec->nExcept = ctx->nExcept;
+    rec->srr0 = ctx->srr0;
+    rec->srr1 = ctx->srr1;
+    rec->cr = ctx->cr;
+    rec->lr = ctx->lr;
+    rec->ctr = ctx->ctr;
+    rec->xer = ctx->xer;
+    rec->msr = ctx->msr;
+    rec->dabr = ctx->dabr;
+    /* Not in frame_context, and still valid: the vector routine has not
+     * executed a load or store that would overwrite them. */
+    rec->dsisr = mfspr(18); /* DSISR */
+    rec->dar = mfspr(19);   /* DAR: the address the access faulted on */
+
+    for (i = 0; i < 32; i++) {
+        rec->gpr[i] = ctx->gpr[i];
+    }
+    for (i = 0; i < 3; i++) {
+        rec->objTrace[i] = gObjectStackTrace[i];
+    }
+    capture_stack(rec, ctx->gpr[1]);
+
+    /* No more locking on the log: see gc_logfile_set_crash_mode. */
+    gc_logfile_set_crash_mode();
+
+    /*
+     * The whole report, into the log's RAM ring and out of the polled console,
+     * with interrupts still OFF.
+     *
+     * This ordering is the correction of 2026-09-07 and it is the difference
+     * between a report and a photograph of the handler failing. Everything
+     * here is polled: gc_logfile_write appends to a RAM ring (and takes no
+     * lock, crash mode is set above), write(1) reaches libogc's framebuffer
+     * console with a memcpy. Nothing can preempt it because nothing is allowed
+     * to interrupt yet, so by the time MSR[EE] goes back on the evidence has
+     * already been emitted -- and a second fault can only cost us the card
+     * copy, not the finding.
+     */
+    crash_puts("\n*** exception ");
+    crash_dec((s32) rec->nExcept);
+    crash_puts(" (");
+    crash_puts(exception_name(rec->nExcept));
+    crash_puts(") at ");
+    crash_hex(rec->srr0);
+    crash_puts(" ***\n");
+    report_to_log(rec);
+
+    /*
+     * Only now, interrupts back on, and only to reach the card.
+     *
+     * libfat takes an LWP mutex per partition, newlib's fopen allocates under
+     * another, and the SD card's EXI transfers complete on an interrupt: with
+     * MSR[EE] clear all three either fail or never complete, and the first
+     * hardware run showed exactly that -- a log stopping at "boot: game
+     * running" with no CRASH block beside it.
+     *
+     * The risk is the one that bit us: with interrupts on, the machine that
+     * has already faulted keeps running, and something asynchronous can take
+     * its own exception here. sFirstCtx above is the answer to that, and it is
+     * why this window is now as small as it can be -- flush and record only,
+     * with the report already written.
+     */
+    mtmsr(msr | MSR_FP | MSR_EE);
+
+    sCrashPending = TRUE;
+    flush_report(rec);
+
+    /*
+     * Interrupts off again before libogc takes the screen: its dump never
+     * returns, it loops polling the pad, so with them on every other thread
+     * keeps running on a dead machine and the next exception draws its own
+     * dump over this one. FP stays enabled -- libogc is about to format a
+     * screenful of registers.
+     */
+    mtmsr(msr | MSR_FP);
 
     /* libogc's own dump goes to the screen and the USB Gecko, and it is the
      * only half of this that a user without a card reader can read. */
