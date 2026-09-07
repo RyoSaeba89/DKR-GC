@@ -201,6 +201,39 @@ copy from inside the handler remains unreliable; the screen is the channel.
 
 ---
 
+### Is it isolated? The port now counts instead of claiming (2026-09-07)
+
+A decompilation this size cannot be proved free of unbounded indices by
+reading it, and the wave bug is a *class*: an out-of-range access that the N64
+answered with junk and the GameCube answers with a DSI. So the handler stops
+letting that class be fatal and starts enumerating it.
+
+A DSI whose `DAR` is outside MEM1, the hardware registers and the locked cache
+is decoded, stepped over with its destination register zeroed, and recorded by
+faulting PC. The heartbeat prints
+
+    dsi rec 12 at 2 sites | 800b7e88 x10 dar 88261ff0 | 8009c14c x2 dar 00000030
+
+and flushes the beat that finds a new site. **`dsi rec` absent is the claim
+that nothing the session exercised indexed outside RAM; anything else is a
+list for `addr2line`, collected while the game keeps running.**
+
+It works because libogc's vector routine restores the whole frame and `rfi`s
+(`lwz r4,12(r1) ; mtsrr0 r4` at `80102c34` in the linked image), so `ctx->srr0`
+and `ctx->gpr` written in the wrapper take effect. Only the load/store forms a
+C compiler emits are decoded; anything else is refused and still reported as a
+crash, because silence would be worse than the fault.
+
+**What it does NOT cover, and this is the honest half.** It sees an index that
+lands outside the machine's address space. An index that lands *inside* MEM1 --
+reading or writing another object in 24 MB of RAM -- takes no exception and
+stays invisible. That is the larger class, and the four all-`0xFF` textures at
+`80320b70 / 80321c10 / 80322cb0 / 80323d50`, identical across two crashes and
+never fatal, are almost certainly an instance of it. The instrument for that
+class is different: guard patterns around the pool's allocations and the
+texture cache, checked per beat. Not built yet.
+
+
 ## Superseded: "a wild store in the renderer" (2026-09-06)
 
 It was a wild *load*, in `waves_render`, and the section above names it. The
